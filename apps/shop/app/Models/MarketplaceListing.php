@@ -28,6 +28,33 @@ class MarketplaceListing extends Model
         'synced_at',
     ];
 
+    public function getPrimaryImageUrlAttribute(): ?string
+    {
+        $image = $this->images[0] ?? null;
+
+        if (is_string($image)) {
+            return $image;
+        }
+
+        if (! is_array($image)) {
+            return null;
+        }
+
+        foreach ([
+            'big',
+            'c516x688',
+            'square',
+            'c246x328',
+            'tm',
+        ] as $key) {
+            if (filled($image[$key] ?? null)) {
+                return (string) $image[$key];
+            }
+        }
+
+        return null;
+    }
+
     protected function casts(): array
     {
         return [
