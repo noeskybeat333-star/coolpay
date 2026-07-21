@@ -1,0 +1,24 @@
+services:
+
+  portainer:
+
+    image: portainer/portainer-ce:lts
+
+    container_name: portainer
+
+    restart: unless-stopped
+
+    ports:
+      - "9443:9443"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/data/portainer:/data
+
+    networks:
+      - proxy
+
+networks:
+
+  proxy:
+    external: true

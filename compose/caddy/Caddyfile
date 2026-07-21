@@ -1,0 +1,7 @@
+{
+    email noeskybeat333@gmail.com
+}
+
+:80 {
+    reverse_proxy shop-web:80
+}

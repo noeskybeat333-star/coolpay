@@ -1,0 +1,32 @@
+services:
+  app:
+    build:
+      context: /opt/infra/apps/shop
+      dockerfile: Dockerfile
+    container_name: shop-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - /opt/infra/apps/shop:/var/www/html
+    networks:
+      - backend
+      - proxy
+
+  web:
+    image: nginx:1.28-alpine
+    container_name: shop-web
+    restart: unless-stopped
+    depends_on:
+      - app
+    volumes:
+      - /opt/infra/apps/shop:/var/www/html:ro
+      - /opt/infra/compose/shop/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - backend
+      - proxy
+
+networks:
+  backend:
+    external: true
+  proxy:
+    external: true
