@@ -6,6 +6,7 @@ use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Tables\Columns\IconColumn;
+use Filament\Tables\Columns\ImageColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 
@@ -15,6 +16,18 @@ class ProductsTable
     {
         return $table
             ->columns([
+                ImageColumn::make(
+                    'primaryMarketplaceListing.primary_image_url'
+                )
+                    ->label('Фото')
+                    ->imageSize(64)
+                    ->square()
+                    ->checkFileExistence(false)
+                    ->extraImgAttributes([
+                        'loading' => 'lazy',
+                        'alt' => 'Фото товара',
+                    ]),
+
                 TextColumn::make('name')
                     ->label('Название')
                     ->searchable()
@@ -47,6 +60,11 @@ class ProductsTable
                     ->label('Цена продажи')
                     ->money('RUB')
                     ->sortable(),
+
+                TextColumn::make('primaryMarketplaceListing.price')
+                    ->label('Цена WB')
+                    ->money('RUB')
+                    ->placeholder('—'),
 
                 TextColumn::make('stock_quantity')
                     ->label('Остаток')

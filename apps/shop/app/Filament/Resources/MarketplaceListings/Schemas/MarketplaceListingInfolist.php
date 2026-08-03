@@ -86,6 +86,26 @@ class MarketplaceListingInfolist
                     ->columns(2)
                     ->columnSpan(2),
 
+                Section::make('Цена Wildberries')
+                    ->schema([
+                        TextEntry::make('base_price')
+                            ->label('Цена до скидки')
+                            ->money('RUB')
+                            ->placeholder('—'),
+
+                        TextEntry::make('discount_percent')
+                            ->label('Скидка продавца')
+                            ->suffix('%')
+                            ->placeholder('—'),
+
+                        TextEntry::make('price')
+                            ->label('Цена продажи')
+                            ->money('RUB')
+                            ->placeholder('—'),
+                    ])
+                    ->columns(3)
+                    ->columnSpanFull(),
+
                 Section::make('Описание')
                     ->schema([
                         TextEntry::make('description')

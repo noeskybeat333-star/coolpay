@@ -69,6 +69,24 @@ class MarketplaceListingsTable
                     ->sortable()
                     ->placeholder('—'),
 
+                TextColumn::make('base_price')
+                    ->label('До скидки')
+                    ->money('RUB')
+                    ->sortable()
+                    ->placeholder('—'),
+
+                TextColumn::make('discount_percent')
+                    ->label('Скидка')
+                    ->suffix('%')
+                    ->sortable()
+                    ->placeholder('—'),
+
+                TextColumn::make('price')
+                    ->label('Цена WB')
+                    ->money('RUB')
+                    ->sortable()
+                    ->placeholder('—'),
+
                 TextColumn::make('barcode')
                     ->label('Штрихкод')
                     ->searchable()

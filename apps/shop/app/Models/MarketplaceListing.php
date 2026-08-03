@@ -19,7 +19,8 @@ class MarketplaceListing extends Model
         'category',
         'description',
         'price',
-        'old_price',
+        'base_price',
+        'discount_percent',
         'stock_quantity',
         'status',
         'characteristics',
@@ -28,38 +29,49 @@ class MarketplaceListing extends Model
         'synced_at',
     ];
 
+    public function getImageUrlsAttribute(): array
+    {
+        return collect($this->images ?? [])
+            ->map(function (mixed $image): ?string {
+                if (is_string($image)) {
+                    return filled($image) ? $image : null;
+                }
+
+                if (! is_array($image)) {
+                    return null;
+                }
+
+                foreach ([
+                    'big',
+                    'c516x688',
+                    'square',
+                    'c246x328',
+                    'tm',
+                ] as $key) {
+                    if (filled($image[$key] ?? null)) {
+                        return (string) $image[$key];
+                    }
+                }
+
+                return null;
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
     public function getPrimaryImageUrlAttribute(): ?string
     {
-        $image = $this->images[0] ?? null;
-
-        if (is_string($image)) {
-            return $image;
-        }
-
-        if (! is_array($image)) {
-            return null;
-        }
-
-        foreach ([
-            'big',
-            'c516x688',
-            'square',
-            'c246x328',
-            'tm',
-        ] as $key) {
-            if (filled($image[$key] ?? null)) {
-                return (string) $image[$key];
-            }
-        }
-
-        return null;
+        return $this->image_urls[0] ?? null;
     }
 
     protected function casts(): array
     {
         return [
             'price' => 'decimal:2',
-            'old_price' => 'decimal:2',
+            'base_price' => 'decimal:2',
+            'discount_percent' => 'integer',
             'stock_quantity' => 'integer',
             'characteristics' => 'array',
             'images' => 'array',
