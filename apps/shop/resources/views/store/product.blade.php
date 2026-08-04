@@ -105,17 +105,22 @@
         </nav>
 
         <div class="mt-6 grid gap-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(380px,0.85fr)] lg:gap-12">
-            <section class="min-w-0">
+            <section
+                class="min-w-0"
+                data-product-gallery
+            >
                 <div class="grid gap-4 sm:grid-cols-[88px_minmax(0,1fr)]">
                     @if ($images->count() > 1)
-                        <div class="order-2 flex gap-3 overflow-x-auto sm:order-1 sm:flex-col">
+                        <div class="order-2 flex gap-3 overflow-x-auto pb-2 sm:order-1 sm:max-h-[620px] sm:flex-col sm:overflow-y-auto sm:pb-0">
                             @foreach ($images as $index => $image)
                                 <button
                                     type="button"
                                     data-gallery-thumbnail
+                                    data-gallery-index="{{ $index }}"
                                     data-image="{{ $image }}"
-                                    class="size-20 shrink-0 overflow-hidden rounded-xl border bg-white p-2 transition {{ $index === 0 ? 'border-red-500 ring-2 ring-red-100' : 'border-slate-200 hover:border-red-300' }}"
-                                    aria-label="Открыть изображение {{ $index + 1 }}"
+                                    class="size-20 shrink-0 overflow-hidden rounded-xl border bg-white transition {{ $index === 0 ? 'border-violet-500 ring-2 ring-violet-100' : 'border-slate-200 hover:border-violet-300' }}"
+                                    aria-label="Показать изображение {{ $index + 1 }}"
+                                    aria-current="{{ $index === 0 ? 'true' : 'false' }}"
                                 >
                                     <img
                                         src="{{ $image }}"
@@ -128,28 +133,136 @@
                         </div>
                     @endif
 
-                    <div class="order-1 flex aspect-square min-w-0 items-center justify-center overflow-hidden rounded-3xl border border-slate-200 bg-white p-5 sm:order-2 sm:p-10">
-                        @if ($images->isNotEmpty())
-                            <img
-                                data-gallery-main
-                                src="{{ $images->first() }}"
-                                alt="{{ $product->name }}"
-                                class="size-full object-contain"
+                    <div class="order-1 sm:order-2">
+                        <button
+                            type="button"
+                            data-gallery-open
+                            class="group relative flex aspect-square w-full min-w-0 cursor-zoom-in items-center justify-center overflow-hidden rounded-3xl border border-slate-200 bg-white"
+                            aria-label="Открыть полноэкранный просмотр изображения"
+                        >
+                            @if ($images->isNotEmpty())
+                                <img
+                                    data-gallery-main
+                                    src="{{ $images->first() }}"
+                                    alt="{{ $product->name }}"
+                                    class="block size-full object-contain"
+                                >
+
+                                <span class="absolute bottom-4 right-4 inline-flex items-center gap-2 rounded-xl bg-slate-950/80 px-3 py-2 text-xs font-bold text-white opacity-100 shadow-lg backdrop-blur transition sm:opacity-0 sm:group-hover:opacity-100">
+                                    <svg
+                                        class="size-4"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                    >
+                                        <circle cx="11" cy="11" r="7"></circle>
+                                        <path d="m20 20-3.5-3.5"></path>
+                                        <path d="M11 8v6M8 11h6"></path>
+                                    </svg>
+
+                                    Увеличить
+                                </span>
+                            @else
+                                <span class="text-sm text-slate-400">
+                                    Изображение отсутствует
+                                </span>
+                            @endif
+                        </button>
+
+                        @if ($images->count() > 1)
+                            <div class="mt-3 flex items-center justify-between text-xs text-slate-400">
+                            <span>
+                                Доступно изображений: {{ $images->count() }}
+                            </span>
+
+                            <span>
+                                Нажмите на фото для просмотра
+                            </span>
+                        </div>
+                    @endif
+                </div>
+            </div>
+
+            @if ($images->isNotEmpty())
+                <div
+                    data-gallery-modal
+                    hidden
+                    class="fixed inset-0 z-[100] bg-black/95"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Просмотр фотографий товара"
+                >
+                    <button
+                        type="button"
+                        data-gallery-close
+                        class="absolute right-4 top-4 z-20 inline-flex size-12 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white backdrop-blur transition hover:bg-white/20 sm:right-6 sm:top-6"
+                        aria-label="Закрыть просмотр"
+                    >
+                        <svg
+                            class="size-6"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                        >
+                            <path d="M6 6l12 12M18 6 6 18"></path>
+                        </svg>
+                    </button>
+
+                    @if ($images->count() > 1)
+                        <button
+                            type="button"
+                            data-gallery-previous
+                            class="absolute left-3 top-1/2 z-20 inline-flex size-12 -translate-y-1/2 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white backdrop-blur transition hover:bg-white/20 sm:left-6 sm:size-14"
+                            aria-label="Предыдущее изображение"
+                        >
+                            <svg
+                                class="size-7"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
                             >
-                        @else
-                            <div class="text-sm text-slate-400">
-                                Изображение отсутствует
-                            </div>
-                        @endif
+                                <path d="m15 18-6-6 6-6"></path>
+                            </svg>
+                        </button>
+
+                        <button
+                            type="button"
+                            data-gallery-next
+                            class="absolute right-3 top-1/2 z-20 inline-flex size-12 -translate-y-1/2 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white backdrop-blur transition hover:bg-white/20 sm:right-6 sm:size-14"
+                            aria-label="Следующее изображение"
+                        >
+                            <svg
+                                class="size-7"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                            >
+                                <path d="m9 18 6-6-6-6"></path>
+                            </svg>
+                        </button>
+                    @endif
+
+                    <div class="flex h-full w-full items-center justify-center px-4 py-20 sm:px-24">
+                        <img
+                            data-gallery-modal-image
+                            src="{{ $images->first() }}"
+                            alt="{{ $product->name }}"
+                            class="max-h-full max-w-full select-none object-contain"
+                        >
+                    </div>
+
+                    <div class="absolute bottom-5 left-1/2 z-20 -translate-x-1/2 rounded-full bg-white/10 px-4 py-2 text-sm font-semibold text-white backdrop-blur">
+                        <span data-gallery-current>1</span>
+                        <span class="text-white/50">/</span>
+                        <span>{{ $images->count() }}</span>
                     </div>
                 </div>
-
-                @if ($images->count() > 1)
-                    <p class="mt-3 text-xs text-slate-400 sm:pl-[104px]">
-                        Доступно изображений: {{ $images->count() }}
-                    </p>
-                @endif
-            </section>
+            @endif
+        </section>
 
             <section>
                 <div class="lg:sticky lg:top-28">
