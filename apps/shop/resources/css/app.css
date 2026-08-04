@@ -7,3 +7,59 @@
     --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
 }
+@media (prefers-color-scheme: dark) {
+    .store-product-page {
+        color: #f8fafc;
+    }
+
+    .store-product-page .bg-white {
+        background-color: #0d1324;
+    }
+
+    .store-product-page .border-slate-200 {
+        border-color: rgb(255 255 255 / 0.1);
+    }
+
+    .store-product-page .border-slate-100 {
+        border-color: rgb(255 255 255 / 0.08);
+    }
+
+    .store-product-page .text-slate-900 {
+        color: #f8fafc;
+    }
+
+    .store-product-page .text-slate-600,
+    .store-product-page .text-slate-500 {
+        color: #94a3b8;
+    }
+
+    .store-product-page .text-slate-400 {
+        color: #64748b;
+    }
+
+    .store-product-page .bg-slate-100 {
+        background-color: rgb(255 255 255 / 0.06);
+    }
+
+    .store-product-page .bg-slate-200 {
+        background-color: rgb(255 255 255 / 0.1);
+    }
+
+    .store-product-page .bg-slate-300 {
+        background-color: #334155;
+    }
+
+    .store-product-page .bg-red-50 {
+        background-color: rgb(239 68 68 / 0.12);
+    }
+
+    .store-product-page [data-gallery-open],
+    .store-product-page [data-gallery-thumbnail] {
+        background-color: #ffffff;
+        border-color: rgb(255 255 255 / 0.14);
+    }
+
+    .store-product-page [data-gallery-modal] {
+        background-color: rgb(0 0 0 / 0.95);
+    }
+}

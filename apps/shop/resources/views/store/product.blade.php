@@ -77,7 +77,7 @@
 
     @endphp
 
-    <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-10">
+    <div class="store-product-page mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-10">
         <nav class="flex flex-wrap items-center gap-2 text-sm text-slate-500">
             <a
                 href="{{ route('store.home') }}"
@@ -413,40 +413,4 @@
             </a>
         </div>
     </div>
-
-    @if ($images->count() > 1)
-        <script>
-            document.addEventListener('DOMContentLoaded', () => {
-                const mainImage = document.querySelector('[data-gallery-main]');
-                const thumbnails = document.querySelectorAll('[data-gallery-thumbnail]');
-
-                thumbnails.forEach((thumbnail) => {
-                    thumbnail.addEventListener('click', () => {
-                        if (! mainImage) {
-                            return;
-                        }
-
-                        mainImage.src = thumbnail.dataset.image;
-
-                        thumbnails.forEach((item) => {
-                            item.classList.remove(
-                                'border-red-500',
-                                'ring-2',
-                                'ring-red-100'
-                            );
-
-                            item.classList.add('border-slate-200');
-                        });
-
-                        thumbnail.classList.remove('border-slate-200');
-                        thumbnail.classList.add(
-                            'border-red-500',
-                            'ring-2',
-                            'ring-red-100'
-                        );
-                    });
-                });
-            });
-        </script>
-    @endif
 @endsection
