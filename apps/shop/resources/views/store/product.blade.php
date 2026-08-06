@@ -305,14 +305,36 @@
                             </div>
                         @endif
 
-                        <button
-                            type="button"
-                            disabled
-                            class="mt-6 w-full cursor-not-allowed rounded-xl bg-slate-300 px-6 py-4 text-base font-bold text-white"
-                            title="Корзину подключим на следующем этапе"
-                        >
-                            Корзина скоро появится
-                        </button>
+                        @if ($storePrice > 0 && $product->stock_quantity > 0)
+                            <form
+                                action="{{ route('store.cart.store', $product) }}"
+                                method="POST"
+                                class="mt-6"
+                            >
+                                @csrf
+
+                                <input
+                                    type="hidden"
+                                    name="quantity"
+                                    value="1"
+                                >
+
+                                <button
+                                    type="submit"
+                                    class="w-full rounded-xl bg-violet-600 px-6 py-4 text-base font-bold text-white transition hover:bg-violet-500 dark:bg-red-600 dark:hover:bg-red-500"
+                                >
+                                    Добавить в корзину
+                                </button>
+                            </form>
+                        @else
+                            <button
+                                type="button"
+                                disabled
+                                class="mt-6 w-full cursor-not-allowed rounded-xl bg-slate-300 px-6 py-4 text-base font-bold text-white"
+                            >
+                                {{ $product->stock_quantity > 0 ? 'Цена по запросу' : 'Нет в наличии' }}
+                            </button>
+                        @endif
 
                         <div class="mt-6 grid gap-4 border-t border-slate-100 pt-6 text-sm">
                             <div class="flex gap-3">

@@ -85,6 +85,19 @@ class Product extends Model
             ->all();
     }
 
+    public function getStorePriceAttribute(): float
+    {
+        $salePrice = (float) $this->sale_price;
+
+        if ($salePrice > 0) {
+            return $salePrice;
+        }
+
+        return (float) (
+            $this->primaryMarketplaceListing?->price ?? 0
+        );
+    }
+
     protected function casts(): array
     {
         return [

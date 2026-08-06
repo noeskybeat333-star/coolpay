@@ -99,11 +99,10 @@
                         </svg>
                     </a>
 
-                    <button
-                        type="button"
+                    <a
+                        href="{{ route('store.cart.index') }}"
                         class="relative inline-flex size-11 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-violet-700 text-white shadow-lg shadow-violet-200 transition hover:from-violet-400 hover:to-violet-600 dark:from-red-500 dark:to-red-700 dark:shadow-red-950/30 dark:hover:from-red-400 dark:hover:to-red-600"
                         aria-label="Корзина"
-                        title="Корзина появится на следующем этапе"
                     >
                         <svg
                             class="size-5"
@@ -118,9 +117,9 @@
                         </svg>
 
                         <span class="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full bg-slate-950 text-[10px] font-bold text-white dark:border dark:border-white/20 dark:bg-[#050816]">
-                            0
+                            {{ app(\App\Services\CartService::class)->count() }}
                         </span>
-                    </button>
+                    </a>
                 </nav>
             </div>
 
