@@ -229,13 +229,22 @@
                         </div>
                     </dl>
 
-                    <button
-                        type="button"
-                        disabled
-                        class="mt-6 w-full cursor-not-allowed rounded-xl bg-slate-300 px-6 py-4 font-bold text-white dark:bg-slate-700"
-                    >
-                        Оформление — следующий шаг
-                    </button>
+                    @if ($canCheckout)
+                        <a
+                            href="{{ route('store.checkout.create') }}"
+                            class="mt-6 block w-full rounded-xl bg-violet-600 px-6 py-4 text-center font-bold text-white transition hover:bg-violet-500 dark:bg-red-600 dark:hover:bg-red-500"
+                        >
+                            Перейти к оформлению
+                        </a>
+                    @else
+                        <button
+                            type="button"
+                            disabled
+                            class="mt-6 w-full cursor-not-allowed rounded-xl bg-slate-300 px-6 py-4 font-bold text-white dark:bg-slate-700"
+                        >
+                            Оформление недоступно
+                        </button>
+                    @endif
 
                     @unless ($canCheckout)
                         <p class="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
