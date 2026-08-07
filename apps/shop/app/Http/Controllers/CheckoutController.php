@@ -147,6 +147,9 @@ class CheckoutController extends Controller
                 }
 
                 $order = Order::create([
+
+                    'source' =>
+                        Order::SOURCE_STOREFRONT,
                     'user_id' =>
                         $request->user()?->getKey(),
                     'status' => Order::STATUS_NEW,

@@ -50,6 +50,11 @@ class MarketplaceAccount extends Model
         return $this->hasMany(MarketplaceListing::class);
     }
 
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Order::class);
+    }
+
     public function syncLogs(): HasMany
     {
         return $this->hasMany(MarketplaceSyncLog::class);
