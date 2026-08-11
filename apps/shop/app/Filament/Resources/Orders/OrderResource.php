@@ -14,6 +14,7 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Model;
 use UnitEnum;
+use Illuminate\Database\Eloquent\Builder;
 
 class OrderResource extends Resource
 {
@@ -85,6 +86,14 @@ class OrderResource extends Resource
         return $count > 0
             ? (string) $count
             : null;
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()
+            ->with([
+                'marketplaceAccount.integrationType',
+            ]);
     }
 
     public static function getPages(): array
