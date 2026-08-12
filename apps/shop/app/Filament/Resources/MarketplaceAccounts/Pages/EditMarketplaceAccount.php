@@ -5,6 +5,8 @@ namespace App\Filament\Resources\MarketplaceAccounts\Pages;
 use App\Filament\Resources\MarketplaceAccounts\MarketplaceAccountResource;
 use App\Integrations\MarketplaceDriverManager;
 use App\Models\IntegrationType;
+use App\Services\MarketplaceOrderSyncRunner;
+use Carbon\CarbonImmutable;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Notifications\Notification;
@@ -286,6 +288,70 @@ class EditMarketplaceAccount extends EditRecord
                     } finally {
                         $lock->release();
                     }
+                }),
+
+            Action::make('importOrders')
+                ->label('Синхронизировать заказы')
+                ->icon('heroicon-o-inbox-arrow-down')
+                ->color('primary')
+                ->visible(
+                    fn (): bool => app(
+                        MarketplaceOrderSyncRunner::class
+                    )->supportsAccount($this->record)
+                )
+                ->requiresConfirmation()
+                ->modalHeading('Синхронизировать заказы?')
+                ->modalDescription(
+                    'CRM прочитает заказы маркетплейса за последние '
+                    .'90 дней и обновит базу. На маркетплейсе ничего '
+                    .'изменено не будет, повторный запуск не создаёт '
+                    .'дублей.'
+                )
+                ->modalSubmitActionLabel('Синхронизировать')
+                ->action(function (): void {
+                    abort_unless(
+                        static::getResource()::canEdit(
+                            $this->record
+                        ),
+                        403,
+                    );
+
+                    $runner = app(
+                        MarketplaceOrderSyncRunner::class
+                    );
+
+                    $result = $runner->run(
+                        $this->record,
+                        CarbonImmutable::now()->subDays(90),
+                    );
+
+                    $notification = Notification::make()
+                        ->body($runner->describe($result));
+
+                    if ($result->failed > 0) {
+                        $notification
+                            ->danger()
+                            ->title('Ошибка синхронизации');
+                    } elseif (
+                        $result->skipped > 0
+                        && $result->received === 0
+                    ) {
+                        $notification
+                            ->warning()
+                            ->title('Синхронизация пропущена');
+                    } else {
+                        $notification
+                            ->success()
+                            ->title('Заказы синхронизированы');
+                    }
+
+                    $notification->send();
+
+                    $this->record->refresh();
+
+                    $this->refreshFormData([
+                        'last_synced_at',
+                    ]);
                 }),
 
             DeleteAction::make()

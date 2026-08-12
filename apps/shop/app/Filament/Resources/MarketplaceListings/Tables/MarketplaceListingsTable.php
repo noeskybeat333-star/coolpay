@@ -3,11 +3,15 @@
 namespace App\Filament\Resources\MarketplaceListings\Tables;
 
 use App\Models\MarketplaceListing;
+use App\Services\MarketplaceProductLinker;
+use Filament\Actions\Action;
 use Filament\Actions\ViewAction;
+use Filament\Notifications\Notification;
 use Filament\Tables\Columns\ImageColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Throwable;
 
 class MarketplaceListingsTable
 {
@@ -153,6 +157,53 @@ class MarketplaceListingsTable
             ->recordActions([
                 ViewAction::make()
                     ->label('Открыть'),
+
+                Action::make('linkProduct')
+                    ->label('Связать с товаром')
+                    ->icon('heroicon-o-link')
+                    ->color('success')
+                    ->visible(
+                        fn (MarketplaceListing $record): bool =>
+                            $record->product_id === null
+                    )
+                    ->requiresConfirmation()
+                    ->modalHeading('Связать карточку с товаром?')
+                    ->modalDescription(
+                        'Если товар с таким артикулом уже есть в CRM — '
+                        .'карточка будет связана с ним. Если нет — '
+                        .'будет создан неактивный черновик с нулевой '
+                        .'ценой и остатком.'
+                    )
+                    ->modalSubmitActionLabel('Связать')
+                    ->action(function (
+                        MarketplaceListing $record,
+                    ): void {
+                        try {
+                            $result = app(
+                                MarketplaceProductLinker::class
+                            )->createOrLinkDraft($record);
+
+                            Notification::make()
+                                ->success()
+                                ->title(
+                                    $result['created']
+                                        ? 'Черновик товара создан'
+                                        : 'Карточка связана с товаром'
+                                )
+                                ->body($result['product']->name)
+                                ->send();
+                        } catch (Throwable $exception) {
+                            report($exception);
+
+                            Notification::make()
+                                ->danger()
+                                ->title('Не удалось связать карточку')
+                                ->body(
+                                    'Подробности записаны в журнал Laravel.'
+                                )
+                                ->send();
+                        }
+                    }),
             ])
             ->paginationPageOptions([
                 25,

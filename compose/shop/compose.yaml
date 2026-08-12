@@ -12,6 +12,22 @@ services:
       - backend
       - proxy
 
+  scheduler:
+    build:
+      context: /opt/infra/apps/shop
+      dockerfile: Dockerfile
+    container_name: shop-scheduler
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: php artisan schedule:work
+    depends_on:
+      - app
+    volumes:
+      - /opt/infra/apps/shop:/var/www/html
+    networks:
+      - backend
+      - proxy
+
   web:
     image: nginx:1.28-alpine
     container_name: shop-web

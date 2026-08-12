@@ -2,18 +2,24 @@
 
 namespace App\Integrations\Drivers;
 
+use App\Integrations\Contracts\ImportsMarketplaceOrders;
 use App\Integrations\Contracts\MarketplaceDriver;
 use App\Integrations\Results\CatalogImportResult;
 use App\Integrations\Results\ConnectionTestResult;
+use App\Integrations\Results\OrderImportResult;
 use App\Models\MarketplaceAccount;
 use App\Models\MarketplaceListing;
+use App\Services\WildberriesOrderImporter;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Throwable;
 
-class WildberriesDriver implements MarketplaceDriver
+class WildberriesDriver implements
+    MarketplaceDriver,
+    ImportsMarketplaceOrders
 {
     private const COMMON_API_URL =
         'https://common-api.wildberries.ru';
@@ -374,6 +380,14 @@ class WildberriesDriver implements MarketplaceDriver
         );
     }
 
+    public function importOrders(
+        MarketplaceAccount $account,
+        ?CarbonImmutable $since = null,
+    ): OrderImportResult {
+        return app(WildberriesOrderImporter::class)
+            ->import($account, $since);
+    }
+
     public function capabilities(): array
     {
         return [
@@ -381,7 +395,11 @@ class WildberriesDriver implements MarketplaceDriver
             'catalog_read' => true,
             'prices_read' => true,
             'stocks_read' => true,
-            'orders_read' => false,
+            'orders_read' => true,
+            'orders_fbs' => true,
+            'orders_dbs' => false,
+            'orders_dbw' => false,
+            'orders_fbo' => false,
             'prices_write' => false,
             'stocks_write' => false,
         ];
