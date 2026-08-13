@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Jobs\SyncMarketplaceOrders;
 use App\Models\MarketplaceAccount;
 use App\Services\MarketplaceOrderSyncRunner;
 use Carbon\CarbonImmutable;
@@ -11,7 +12,8 @@ class ImportMarketplaceOrders extends Command
 {
     protected $signature = 'marketplace:import-orders
         {--account=* : ID подключений, по умолчанию все активные}
-        {--days=30 : Глубина импорта в днях}';
+        {--days=30 : Глубина импорта в днях}
+        {--sync : Выполнить сразу, минуя очередь (для отладки)}';
 
     protected $description =
         'Импортирует заказы маркетплейсов в CRM';
@@ -61,6 +63,19 @@ class ImportMarketplaceOrders extends Command
                 $this->line(
                     $title.' — импорт заказов не поддерживается, пропуск.'
                 );
+
+                continue;
+            }
+
+            // По умолчанию только ставим задачу в очередь: планировщик
+            // не должен держать в себе долгий сетевой импорт.
+            if (! $this->option('sync')) {
+                SyncMarketplaceOrders::dispatch(
+                    $account->getKey(),
+                    $days,
+                );
+
+                $this->info($title.' — задача поставлена в очередь.');
 
                 continue;
             }

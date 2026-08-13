@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Integrations\Exceptions\MarketplaceRateLimitException;
 use App\Integrations\Results\OrderImportResult;
 use App\Models\MarketplaceAccount;
 use App\Models\MarketplaceListing;
@@ -9,6 +10,7 @@ use App\Models\Order;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Throwable;
@@ -113,6 +115,11 @@ class WildberriesOrderImporter
                     $source['path'],
                     $since,
                 );
+            } catch (MarketplaceRateLimitException $exception) {
+                // Отдаём наверх: пусть очередь повторит задачу целиком.
+                // Импортировать половину источников и отчитаться об успехе
+                // было бы хуже, чем честно подождать.
+                throw $exception;
             } catch (ConnectionException) {
                 $failed++;
 
@@ -141,6 +148,8 @@ class WildberriesOrderImporter
                     $source['path'],
                     array_column($rows, 'id'),
                 );
+            } catch (MarketplaceRateLimitException $exception) {
+                throw $exception;
             } catch (Throwable $exception) {
                 $statuses = [];
 
@@ -239,12 +248,7 @@ class WildberriesOrderImporter
             );
 
             if (! $response->successful()) {
-                throw new RuntimeException(
-                    $this->describeHttpError(
-                        $response->status(),
-                        $response->body(),
-                    )
-                );
+                throw $this->httpError($response);
             }
 
             $chunk = $response->json('orders');
@@ -318,12 +322,7 @@ class WildberriesOrderImporter
             );
 
             if (! $response->successful()) {
-                throw new RuntimeException(
-                    $this->describeHttpError(
-                        $response->status(),
-                        $response->body(),
-                    )
-                );
+                throw $this->httpError($response);
             }
 
             foreach (
@@ -693,6 +692,26 @@ class WildberriesOrderImporter
             ->withToken($token)
             ->connectTimeout(10)
             ->timeout(30);
+    }
+
+    /**
+     * Лимит частоты выделяется в отдельный тип: по нему очередь понимает,
+     * что задачу надо повторить, а не считать проваленной.
+     */
+    private function httpError(
+        Response $response,
+    ): RuntimeException {
+        $message = $this->describeHttpError(
+            $response->status(),
+            $response->body(),
+        );
+
+        return $response->status() === 429
+            ? MarketplaceRateLimitException::fromResponse(
+                $response,
+                $message,
+            )
+            : new RuntimeException($message);
     }
 
     private function describeHttpError(

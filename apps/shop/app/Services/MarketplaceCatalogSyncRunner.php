@@ -2,27 +2,26 @@
 
 namespace App\Services;
 
-use App\Integrations\Contracts\ImportsMarketplaceOrders;
 use App\Integrations\Exceptions\MarketplaceRateLimitException;
 use App\Integrations\MarketplaceDriverManager;
-use App\Integrations\Results\OrderImportResult;
+use App\Integrations\Results\CatalogImportResult;
 use App\Models\MarketplaceAccount;
-use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
- * Единая точка запуска импорта заказов маркетплейса.
+ * Единая точка запуска импорта каталога — брат-близнец
+ * MarketplaceOrderSyncRunner.
  *
- * Используется и кнопкой в Filament, и планировщиком, чтобы блокировка,
- * журналирование и разбор результата были одинаковыми независимо от того,
- * кто запустил синхронизацию.
+ * Раньше эта логика жила прямо в замыкании кнопки Filament, из-за чего
+ * запустить импорт можно было только из браузера, а любой сбой на середине
+ * терял всю страницу карточек.
  */
-class MarketplaceOrderSyncRunner
+class MarketplaceCatalogSyncRunner
 {
-    public const OPERATION = 'orders_import';
+    public const OPERATION = 'catalog_import';
 
-    private const LOCK_SECONDS = 900;
+    private const LOCK_SECONDS = 1800;
 
     public function __construct(
         private readonly MarketplaceDriverManager $drivers,
@@ -31,12 +30,11 @@ class MarketplaceOrderSyncRunner
 
     public function run(
         MarketplaceAccount $account,
-        ?CarbonImmutable $since = null,
-    ): OrderImportResult {
+    ): CatalogImportResult {
         $integrationType = $account->integrationType;
 
         if ($integrationType === null) {
-            return new OrderImportResult(
+            return new CatalogImportResult(
                 failed: 1,
                 errors: ['Для подключения не выбрана площадка.'],
             );
@@ -45,17 +43,21 @@ class MarketplaceOrderSyncRunner
         try {
             $driver = $this->drivers->for($integrationType);
         } catch (Throwable $exception) {
-            return new OrderImportResult(
+            return new CatalogImportResult(
                 failed: 1,
                 errors: [$exception->getMessage()],
             );
         }
 
-        if (! $this->supportsOrders($driver)) {
-            return new OrderImportResult(
+        if (
+            ! (
+                $driver->capabilities()['catalog_read'] ?? false
+            )
+        ) {
+            return new CatalogImportResult(
                 failed: 1,
                 errors: [
-                    'Импорт заказов для площадки «'
+                    'Импорт каталога для площадки «'
                         .$integrationType->name
                         .'» пока не реализован.',
                 ],
@@ -63,15 +65,15 @@ class MarketplaceOrderSyncRunner
         }
 
         $lock = Cache::lock(
-            'marketplace-orders-import:'.$account->getKey(),
+            'marketplace-catalog-import:'.$account->getKey(),
             self::LOCK_SECONDS,
         );
 
         if (! $lock->get()) {
-            return new OrderImportResult(
-                skipped: 1,
+            return new CatalogImportResult(
+                failed: 0,
                 errors: [
-                    'Импорт заказов для этого подключения уже выполняется.',
+                    'Импорт каталога для этого подключения уже выполняется.',
                 ],
             );
         }
@@ -79,12 +81,12 @@ class MarketplaceOrderSyncRunner
         $log = $account->syncLogs()->create([
             'operation' => self::OPERATION,
             'status' => 'running',
-            'message' => 'Импорт заказов запущен.',
+            'message' => 'Импорт каталога запущен.',
             'started_at' => now(),
         ]);
 
         try {
-            $result = $driver->importOrders($account, $since);
+            $result = $driver->importCatalog($account);
 
             $log->update([
                 'status' => $result->failed === 0
@@ -95,11 +97,7 @@ class MarketplaceOrderSyncRunner
                 'updated_count' => $result->updated,
                 'failed_count' => $result->failed,
                 'message' => $this->describe($result),
-                'details' => [
-                    'skipped' => $result->skipped,
-                    'errors' => $result->errors,
-                    'since' => $since?->toIso8601String(),
-                ],
+                'details' => ['errors' => $result->errors],
                 'finished_at' => now(),
             ]);
 
@@ -128,10 +126,7 @@ class MarketplaceOrderSyncRunner
                 'finished_at' => now(),
             ]);
 
-            return new OrderImportResult(
-                failed: 1,
-                errors: [$exception->getMessage()],
-            );
+            throw $exception;
         } finally {
             $lock->release();
         }
@@ -147,35 +142,22 @@ class MarketplaceOrderSyncRunner
         }
 
         try {
-            return $this->supportsOrders(
-                $this->drivers->for($integrationType)
+            return (bool) (
+                $this->drivers
+                    ->for($integrationType)
+                    ->capabilities()['catalog_read'] ?? false
             );
         } catch (Throwable) {
             return false;
         }
     }
 
-    public function supportsOrders(mixed $driver): bool
-    {
-        if (! $driver instanceof ImportsMarketplaceOrders) {
-            return false;
-        }
-
-        return (bool) (
-            $driver->capabilities()['orders_read'] ?? false
-        );
-    }
-
-    public function describe(OrderImportResult $result): string
-    {
-        if ($result->skipped > 0 && $result->received === 0) {
-            return $result->errors[0]
-                ?? 'Импорт пропущен.';
-        }
-
+    public function describe(
+        CatalogImportResult $result,
+    ): string {
         if ($result->failed > 0) {
             return $result->errors[0]
-                ?? 'Импорт заказов завершился с ошибками.';
+                ?? 'Импорт каталога завершился с ошибками.';
         }
 
         return sprintf(

@@ -4,6 +4,7 @@ namespace App\Integrations\Drivers;
 
 use App\Integrations\Contracts\ImportsMarketplaceOrders;
 use App\Integrations\Contracts\MarketplaceDriver;
+use App\Integrations\Exceptions\MarketplaceRateLimitException;
 use App\Integrations\Results\CatalogImportResult;
 use App\Integrations\Results\ConnectionTestResult;
 use App\Integrations\Results\OrderImportResult;
@@ -157,13 +158,22 @@ class WildberriesDriver implements
                     );
 
                 if (! $response->successful()) {
+                    // Лимит частоты не считаем провалом импорта:
+                    // отдаём наверх, чтобы очередь повторила задачу позже.
+                    if ($response->status() === 429) {
+                        throw MarketplaceRateLimitException::fromResponse(
+                            $response,
+                            'Превышен лимит запросов к API карточек '
+                            .'Wildberries.',
+                        );
+                    }
+
                     $failed++;
 
                     $errors[] = match ($response->status()) {
                         401 => 'Токен Wildberries недействителен '
                             .'или истёк.',
                         403 => 'У токена нет доступа к карточкам.',
-                        429 => 'Превышен лимит запросов Wildberries.',
                         default => 'Wildberries вернул ошибку HTTP '
                             .$response->status().'.',
                     };
@@ -359,10 +369,20 @@ class WildberriesDriver implements
                     'last_synced_at' => now(),
                 ]);
             }
+        } catch (MarketplaceRateLimitException $exception) {
+            // Временный отказ, а не провал импорта. Отдаём наверх, чтобы
+            // очередь повторила задачу с паузой.
+            throw $exception;
         } catch (ConnectionException) {
             $failed++;
             $errors[] =
                 'Не удалось соединиться с API Wildberries.';
+        } catch (RuntimeException $exception) {
+            // Собственные исключения драйвера написаны для человека
+            // («у токена нет доступа к ценам» и подобные). Прятать их
+            // за словом «внутренняя ошибка» — значит терять диагностику.
+            $failed++;
+            $errors[] = $exception->getMessage();
         } catch (Throwable $exception) {
             report($exception);
 
@@ -644,6 +664,11 @@ class WildberriesDriver implements
             return [];
         }
 
+        // Лимитер Wildberries глобальный на весь кабинет, а не на отдельный
+        // эндпоинт. Поэтому паузу держим не только между страницами
+        // карточек, но и перед каждым обращением за ценами.
+        usleep(700000);
+
         $response = Http::acceptJson()
             ->withToken($token)
             ->connectTimeout(10)
@@ -657,11 +682,17 @@ class WildberriesDriver implements
             );
 
         if (! $response->successful()) {
+            if ($response->status() === 429) {
+                throw MarketplaceRateLimitException::fromResponse(
+                    $response,
+                    'Превышен лимит запросов API цен Wildberries.',
+                );
+            }
+
             throw new RuntimeException(
                 match ($response->status()) {
                     401 => 'Токен Wildberries не имеет доступа к ценам.',
                     403 => 'У токена нет разрешения на чтение цен.',
-                    429 => 'Превышен лимит запросов API цен Wildberries.',
                     default => 'API цен Wildberries вернул ошибку HTTP '
                         .$response->status().'.',
                 }

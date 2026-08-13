@@ -4,15 +4,15 @@ namespace App\Filament\Resources\MarketplaceAccounts\Pages;
 
 use App\Filament\Resources\MarketplaceAccounts\MarketplaceAccountResource;
 use App\Integrations\MarketplaceDriverManager;
+use App\Jobs\SyncMarketplaceCatalog;
+use App\Jobs\SyncMarketplaceOrders;
 use App\Models\IntegrationType;
+use App\Services\MarketplaceCatalogSyncRunner;
 use App\Services\MarketplaceOrderSyncRunner;
-use Carbon\CarbonImmutable;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
-use Illuminate\Support\Facades\Cache;
-use Throwable;
 
 class EditMarketplaceAccount extends EditRecord
 {
@@ -96,40 +96,28 @@ class EditMarketplaceAccount extends EditRecord
                     $notification->send();
                 }),
 
+            // Импорты больше не выполняются внутри HTTP-запроса: они
+            // ставятся в очередь. Так сбой на середине не теряет работу,
+            // лимит частоты API приводит к автоповтору, а долгий импорт
+            // не упирается в таймаут nginx.
             Action::make('importCatalog')
                 ->label('Импортировать карточки')
                 ->icon('heroicon-o-arrow-path')
                 ->color('success')
-                ->visible(function (): bool {
-                    $integrationType =
-                        $this->record->integrationType;
-
-                    if (! $integrationType) {
-                        return false;
-                    }
-
-                    try {
-                        $driver = app(
-                            MarketplaceDriverManager::class
-                        )->for($integrationType);
-
-                        return (bool) (
-                            $driver->capabilities()[
-                                'catalog_read'
-                            ] ?? false
-                        );
-                    } catch (Throwable) {
-                        return false;
-                    }
-                })
+                ->visible(
+                    fn (): bool => app(
+                        MarketplaceCatalogSyncRunner::class
+                    )->supportsAccount($this->record)
+                )
                 ->requiresConfirmation()
                 ->modalHeading('Импортировать карточки?')
                 ->modalDescription(
-                    'CRM прочитает карточки маркетплейса и '
-                    .'обновит локальную базу. Карточки, цены и '
-                    .'остатки на маркетплейсе изменены не будут.'
+                    'Задача уйдёт в очередь и выполнится в фоне. CRM '
+                    .'прочитает карточки маркетплейса и обновит локальную '
+                    .'базу. Карточки, цены и остатки на маркетплейсе '
+                    .'изменены не будут.'
                 )
-                ->modalSubmitActionLabel('Начать импорт')
+                ->modalSubmitActionLabel('Поставить в очередь')
                 ->action(function (): void {
                     abort_unless(
                         static::getResource()::canEdit(
@@ -138,156 +126,19 @@ class EditMarketplaceAccount extends EditRecord
                         403,
                     );
 
-                    $lock = Cache::lock(
-                        'marketplace-catalog-import:'
-                            .$this->record->getKey(),
-                        600,
+                    SyncMarketplaceCatalog::dispatch(
+                        $this->record->getKey()
                     );
 
-                    if (! $lock->get()) {
-                        Notification::make()
-                            ->warning()
-                            ->title('Импорт уже выполняется')
-                            ->body(
-                                'Дождитесь завершения текущего импорта.'
-                            )
-                            ->send();
-
-                        return;
-                    }
-
-                    $log = null;
-
-                    try {
-                        $integrationType =
-                            $this->record->integrationType;
-
-                        if (! $integrationType) {
-                            throw new \RuntimeException(
-                                'Не выбрана площадка.'
-                            );
-                        }
-
-                        $driver = app(
-                            MarketplaceDriverManager::class
-                        )->for($integrationType);
-
-                        if (
-                            ! (
-                                $driver->capabilities()[
-                                    'catalog_read'
-                                ] ?? false
-                            )
-                        ) {
-                            Notification::make()
-                                ->warning()
-                                ->title('Импорт не поддерживается')
-                                ->body(
-                                    'Для этой площадки ещё нет '
-                                    .'драйвера чтения каталога.'
-                                )
-                                ->send();
-
-                            return;
-                        }
-
-                        $log = $this->record
-                            ->syncLogs()
-                            ->create([
-                                'operation' => 'catalog_import',
-
-                                'status' => 'running',
-                                'message' => 'Импорт запущен.',
-
-                                'started_at' => now(),
-                            ]);
-
-                        $result = $driver->importCatalog(
-                            $this->record
-                        );
-
-                        $successful =
-                            $result->failed === 0;
-
-                        $message = $successful
-                            ? sprintf(
-                                'Получено: %d, создано: %d, '
-                                .'обновлено: %d.',
-                                $result->received,
-                                $result->created,
-                                $result->updated,
-                            )
-                            : (
-                                $result->errors[0]
-                                ?? 'Импорт завершился с ошибками.'
-                            );
-
-                        $log->update([
-                            'status' => $successful
-                                ? 'success'
-                                : 'failed',
-
-                            'received_count' => $result->received,
-
-                            'created_count' => $result->created,
-
-                            'updated_count' => $result->updated,
-
-                            'failed_count' => $result->failed,
-
-                            'message' => $message,
-
-                            'details' => [
-                                'errors' => $result->errors,
-                            ],
-
-                            'finished_at' => now(),
-                        ]);
-
-                        $this->record->refresh();
-
-                        $this->refreshFormData([
-                            'last_synced_at',
-                        ]);
-
-                        $notification = Notification::make()
-                            ->title(
-                                $successful
-                                    ? 'Импорт завершён'
-                                    : 'Ошибка импорта'
-                            )
-                            ->body($message);
-
-                        if ($successful) {
-                            $notification->success();
-                        } else {
-                            $notification->danger();
-                        }
-
-                        $notification->send();
-                    } catch (Throwable $exception) {
-                        report($exception);
-
-                        if ($log) {
-                            $log->update([
-                                'status' => 'failed',
-                                'failed_count' => 1,
-                                'message' => 'Внутренняя ошибка импорта.',
-                                'finished_at' => now(),
-                            ]);
-                        }
-
-                        Notification::make()
-                            ->danger()
-                            ->title('Ошибка импорта')
-                            ->body(
-                                'Во время импорта произошла '
-                                .'внутренняя ошибка.'
-                            )
-                            ->send();
-                    } finally {
-                        $lock->release();
-                    }
+                    Notification::make()
+                        ->info()
+                        ->title('Импорт каталога поставлен в очередь')
+                        ->body(
+                            'Результат появится в разделе «Журнал '
+                            .'синхронизаций». Если импорт уже выполняется, '
+                            .'повторная задача не создаётся.'
+                        )
+                        ->send();
                 }),
 
             Action::make('importOrders')
@@ -302,12 +153,12 @@ class EditMarketplaceAccount extends EditRecord
                 ->requiresConfirmation()
                 ->modalHeading('Синхронизировать заказы?')
                 ->modalDescription(
-                    'CRM прочитает заказы маркетплейса за последние '
-                    .'90 дней и обновит базу. На маркетплейсе ничего '
-                    .'изменено не будет, повторный запуск не создаёт '
-                    .'дублей.'
+                    'Задача уйдёт в очередь и выполнится в фоне. CRM '
+                    .'прочитает заказы за последние 90 дней. На '
+                    .'маркетплейсе ничего изменено не будет, повторный '
+                    .'запуск не создаёт дублей.'
                 )
-                ->modalSubmitActionLabel('Синхронизировать')
+                ->modalSubmitActionLabel('Поставить в очередь')
                 ->action(function (): void {
                     abort_unless(
                         static::getResource()::canEdit(
@@ -316,42 +167,19 @@ class EditMarketplaceAccount extends EditRecord
                         403,
                     );
 
-                    $runner = app(
-                        MarketplaceOrderSyncRunner::class
+                    SyncMarketplaceOrders::dispatch(
+                        $this->record->getKey(),
+                        90,
                     );
 
-                    $result = $runner->run(
-                        $this->record,
-                        CarbonImmutable::now()->subDays(90),
-                    );
-
-                    $notification = Notification::make()
-                        ->body($runner->describe($result));
-
-                    if ($result->failed > 0) {
-                        $notification
-                            ->danger()
-                            ->title('Ошибка синхронизации');
-                    } elseif (
-                        $result->skipped > 0
-                        && $result->received === 0
-                    ) {
-                        $notification
-                            ->warning()
-                            ->title('Синхронизация пропущена');
-                    } else {
-                        $notification
-                            ->success()
-                            ->title('Заказы синхронизированы');
-                    }
-
-                    $notification->send();
-
-                    $this->record->refresh();
-
-                    $this->refreshFormData([
-                        'last_synced_at',
-                    ]);
+                    Notification::make()
+                        ->info()
+                        ->title('Синхронизация заказов поставлена в очередь')
+                        ->body(
+                            'Результат появится в разделе «Журнал '
+                            .'синхронизаций».'
+                        )
+                        ->send();
                 }),
 
             DeleteAction::make()
