@@ -100,6 +100,13 @@ class MarketplaceCatalogSyncRunner
         try {
             $result = $driver->importCatalog($account);
 
+            // Карточка и товар CRM с одинаковым артикулом — это один
+            // и тот же товар, подтверждать тут нечего. Связываем сами,
+            // иначе заказы не смогут сослаться на товар и продажи по
+            // каналам не сойдутся.
+            $linked = app(MarketplaceProductLinker::class)
+                ->autoLinkBySku($account);
+
             // Карточки дошли, а цены нет — догоняем их отдельной
             // задачей. Она пойдёт только по сохранённым карточкам и
             // при отказе будет повторять один запрос, а не весь импорт.
@@ -127,7 +134,10 @@ class MarketplaceCatalogSyncRunner
                 'created_count' => $result->created,
                 'updated_count' => $result->updated,
                 'failed_count' => $result->failed,
-                'message' => $this->describe($result),
+                'message' => $this->describe($result)
+                    .($linked > 0
+                        ? ' Связано с товарами CRM: '.$linked.'.'
+                        : ''),
                 'details' => ['errors' => $result->errors],
                 'finished_at' => now(),
             ]);
@@ -203,6 +213,11 @@ class MarketplaceCatalogSyncRunner
             $result->created,
             $result->updated,
         );
+
+        if ($result->archived > 0) {
+            $message .= ' Больше нет на площадке, в архив: '
+                .$result->archived.'.';
+        }
 
         if ($result->pricesDeferred) {
             $message .= ' Цены и остатки не получены из-за лимита '

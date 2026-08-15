@@ -25,3 +25,8 @@ _ide_helper.php
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Временные зонды к API маркетплейсов: живут ровно до того момента,
+# как измеренное знание переехало в код и CLAUDE.md.
+/*-probe.php
+/.ym-key

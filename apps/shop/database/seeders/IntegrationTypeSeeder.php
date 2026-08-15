@@ -48,18 +48,18 @@ class IntegrationTypeSeeder extends Seeder
                 'slug' => 'yandex-market',
                 'name' => 'Яндекс Маркет',
                 'description' => 'Интеграция с кабинетом Яндекс Маркета.',
+                // Идентификаторы бизнеса и кампаний спрашивать не нужно:
+                // их отдаёт GET /campaigns, и проверка подключения
+                // сохраняет их в settings автоматически.
                 'credential_schema' => [
                     [
-                        'name' => 'campaign_id',
-                        'label' => 'Campaign ID',
-                        'type' => 'text',
-                        'required' => true,
-                    ],
-                    [
-                        'name' => 'oauth_token',
-                        'label' => 'OAuth-токен',
+                        'name' => 'api_key',
+                        'label' => 'API-ключ',
                         'type' => 'password',
                         'required' => true,
+                        'hint' => 'Кабинет Маркета → Настройки → '
+                            .'Токены API. Нужны доступы к заказам '
+                            .'и каталогу.',
                     ],
                 ],
                 'sort_order' => 30,

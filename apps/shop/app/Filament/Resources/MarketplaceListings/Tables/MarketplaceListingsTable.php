@@ -3,9 +3,11 @@
 namespace App\Filament\Resources\MarketplaceListings\Tables;
 
 use App\Models\MarketplaceListing;
+use App\Models\Product;
 use App\Services\MarketplaceProductLinker;
 use Filament\Actions\Action;
 use Filament\Actions\ViewAction;
+use Filament\Forms\Components\Select;
 use Filament\Notifications\Notification;
 use Filament\Tables\Columns\ImageColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -50,8 +52,11 @@ class MarketplaceListingsTable
                     ->searchable()
                     ->sortable(),
 
+                // Раньше подписывалось «nmID», но идентификатор
+                // площадки у каждой свой: у WB это число, у Яндекса —
+                // артикул продавца.
                 TextColumn::make('external_id')
-                    ->label('nmID')
+                    ->label('ID на площадке')
                     ->searchable()
                     ->copyable(),
 
@@ -86,7 +91,7 @@ class MarketplaceListingsTable
                     ->placeholder('—'),
 
                 TextColumn::make('price')
-                    ->label('Цена WB')
+                    ->label('Цена на площадке')
                     ->money('RUB')
                     ->sortable()
                     ->placeholder('—'),
@@ -158,6 +163,9 @@ class MarketplaceListingsTable
                 ViewAction::make()
                     ->label('Открыть'),
 
+                // Сопоставление и перенос — разные намерения, поэтому
+                // и действия разные. Связать карточку с товаром CRM
+                // не значит завести этот товар у себя на витрине.
                 Action::make('linkProduct')
                     ->label('Связать с товаром')
                     ->icon('heroicon-o-link')
@@ -166,43 +174,141 @@ class MarketplaceListingsTable
                         fn (MarketplaceListing $record): bool =>
                             $record->product_id === null
                     )
-                    ->requiresConfirmation()
-                    ->modalHeading('Связать карточку с товаром?')
+                    ->modalHeading('Связать карточку с товаром CRM')
                     ->modalDescription(
-                        'Если товар с таким артикулом уже есть в CRM — '
-                        .'карточка будет связана с ним. Если нет — '
-                        .'будет создан неактивный черновик с нулевой '
-                        .'ценой и остатком.'
+                        'Карточка будет отмечена как тот же товар. '
+                        .'На витрине CoolPay ничего не появится, цены '
+                        .'и остатки не изменятся.'
                     )
                     ->modalSubmitActionLabel('Связать')
+                    ->schema([
+                        Select::make('product_id')
+                            ->label('Товар в CRM')
+                            ->required()
+                            ->searchable()
+                            ->options(
+                                fn (
+                                    MarketplaceListing $record,
+                                ): array => static::productOptions(
+                                    $record
+                                ),
+                            )
+                            ->default(
+                                fn (
+                                    MarketplaceListing $record,
+                                ): ?int => app(
+                                    MarketplaceProductLinker::class
+                                )
+                                    ->findMatchingProduct($record)
+                                    ?->getKey(),
+                            )
+                            ->helperText(
+                                'Если артикул совпал, нужный товар '
+                                .'уже подставлен.'
+                            ),
+                    ])
+                    ->action(function (
+                        MarketplaceListing $record,
+                        array $data,
+                    ): void {
+                        $product = Product::query()
+                            ->find($data['product_id']);
+
+                        if ($product === null) {
+                            Notification::make()
+                                ->danger()
+                                ->title('Товар не найден')
+                                ->send();
+
+                            return;
+                        }
+
+                        app(MarketplaceProductLinker::class)
+                            ->linkToProduct($record, $product);
+
+                        Notification::make()
+                            ->success()
+                            ->title('Карточка связана с товаром')
+                            ->body($product->name)
+                            ->send();
+                    }),
+
+                Action::make('moveToStorefront')
+                    ->label('Перенести в CoolPay')
+                    ->icon('heroicon-o-arrow-right-on-rectangle')
+                    ->color('primary')
+                    ->visible(
+                        fn (MarketplaceListing $record): bool =>
+                            $record->product_id === null
+                    )
+                    ->requiresConfirmation()
+                    ->modalHeading('Перенести карточку в CoolPay?')
+                    ->modalDescription(
+                        'В CoolPay появится новый товар с названием, '
+                        .'описанием и категорией из карточки. Он будет '
+                        .'выключен и с нулевой ценой: цены '
+                        .'маркетплейсов включают комиссию площадки, '
+                        .'поэтому розничную нужно назначить самому. '
+                        .'На маркетплейсе ничего не изменится.'
+                    )
+                    ->modalSubmitActionLabel('Перенести')
                     ->action(function (
                         MarketplaceListing $record,
                     ): void {
                         try {
                             $result = app(
                                 MarketplaceProductLinker::class
-                            )->createOrLinkDraft($record);
+                            )->createDraft($record);
 
                             Notification::make()
                                 ->success()
                                 ->title(
                                     $result['created']
-                                        ? 'Черновик товара создан'
+                                        ? 'Товар создан в CoolPay'
                                         : 'Карточка связана с товаром'
                                 )
-                                ->body($result['product']->name)
+                                ->body(
+                                    $result['product']->name
+                                    .' — выключен, назначьте цену.'
+                                )
                                 ->send();
                         } catch (Throwable $exception) {
                             report($exception);
 
                             Notification::make()
                                 ->danger()
-                                ->title('Не удалось связать карточку')
+                                ->title('Не удалось перенести карточку')
                                 ->body(
                                     'Подробности записаны в журнал Laravel.'
                                 )
                                 ->send();
                         }
+                    }),
+
+                Action::make('unlinkProduct')
+                    ->label('Отвязать')
+                    ->icon('heroicon-o-link-slash')
+                    ->color('gray')
+                    ->visible(
+                        fn (MarketplaceListing $record): bool =>
+                            $record->product_id !== null
+                    )
+                    ->requiresConfirmation()
+                    ->modalHeading('Отвязать карточку от товара?')
+                    ->modalDescription(
+                        'Сам товар останется в CRM, удалена будет '
+                        .'только связь.'
+                    )
+                    ->action(function (
+                        MarketplaceListing $record,
+                    ): void {
+                        app(MarketplaceProductLinker::class)
+                            ->unlink($record);
+
+                        Notification::make()
+                            ->success()
+                            ->title('Связь удалена')
+                            ->send();
                     }),
             ])
             ->paginationPageOptions([
@@ -210,5 +316,28 @@ class MarketplaceListingsTable
                 50,
                 100,
             ]);
+    }
+
+    /**
+     * Список товаров CRM для выбора вручную.
+     *
+     * Совпадение по артикулу показывается первым, остальные — по
+     * алфавиту. Артикул в подписи нужен, потому что названия у
+     * одинаковых моделей различаются одним словом.
+     *
+     * @return array<int, string>
+     */
+    private static function productOptions(
+        MarketplaceListing $listing,
+    ): array {
+        return Product::query()
+            ->orderBy('name')
+            ->limit(200)
+            ->get(['id', 'name', 'sku'])
+            ->mapWithKeys(fn (Product $product): array => [
+                $product->getKey() => $product->name
+                    .($product->sku ? '  ['.$product->sku.']' : ''),
+            ])
+            ->all();
     }
 }

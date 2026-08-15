@@ -33,12 +33,22 @@ class MarketplaceListingResource extends Resource
         'карточки';
 
     protected static ?string $navigationLabel =
-        'Карточки';
+        'Карточки маркетплейсов';
 
     protected static string|UnitEnum|null $navigationGroup =
         'Маркетплейсы';
 
     protected static ?int $navigationSort = 3;
+
+    /**
+     * Из меню убран: все карточки, включая витрину, живут в разделе
+     * «Каталог → Карточки». Ресурс оставлен ради страницы просмотра
+     * одной карточки маркетплейса со всеми полями площадки.
+     */
+    public static function shouldRegisterNavigation(): bool
+    {
+        return false;
+    }
 
     public static function infolist(
         Schema $schema,
