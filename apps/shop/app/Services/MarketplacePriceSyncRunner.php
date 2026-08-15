@@ -2,27 +2,29 @@
 
 namespace App\Services;
 
-use App\Integrations\Contracts\ImportsMarketplaceOrders;
+use App\Integrations\Contracts\ImportsMarketplacePrices;
 use App\Integrations\Exceptions\MarketplaceRateLimitException;
 use App\Integrations\MarketplaceDriverManager;
-use App\Integrations\Results\OrderImportResult;
+use App\Integrations\Results\CatalogImportResult;
 use App\Models\MarketplaceAccount;
-use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
- * Единая точка запуска импорта заказов маркетплейса.
+ * Обновление цен и остатков по уже сохранённым карточкам.
  *
- * Используется и кнопкой в Filament, и планировщиком, чтобы блокировка,
- * журналирование и разбор результата были одинаковыми независимо от того,
- * кто запустил синхронизацию.
+ * Отделено от импорта каталога намеренно. Цены живут в
+ * discounts-prices-api, остатки — в marketplace-api, карточки — в
+ * content-api, и лимитеры у них разные. Пока всё это было одной
+ * операцией, отказ по ценам обнулял и карточки, а каждый повтор заново
+ * выкачивал их целиком. Измерено 13.08.2026: восемь попыток подряд
+ * тянули карточки успешно и падали на ценах, разогревая общий лимитер.
  */
-class MarketplaceOrderSyncRunner
+class MarketplacePriceSyncRunner
 {
-    public const OPERATION = 'orders_import';
+    public const OPERATION = 'prices_import';
 
-    private const LOCK_SECONDS = 900;
+    private const LOCK_SECONDS = 1800;
 
     public function __construct(
         private readonly MarketplaceDriverManager $drivers,
@@ -32,12 +34,11 @@ class MarketplaceOrderSyncRunner
 
     public function run(
         MarketplaceAccount $account,
-        ?CarbonImmutable $since = null,
-    ): OrderImportResult {
+    ): CatalogImportResult {
         $integrationType = $account->integrationType;
 
         if ($integrationType === null) {
-            return new OrderImportResult(
+            return new CatalogImportResult(
                 failed: 1,
                 errors: ['Для подключения не выбрана площадка.'],
             );
@@ -46,45 +47,42 @@ class MarketplaceOrderSyncRunner
         try {
             $driver = $this->drivers->for($integrationType);
         } catch (Throwable $exception) {
-            return new OrderImportResult(
+            return new CatalogImportResult(
                 failed: 1,
                 errors: [$exception->getMessage()],
             );
         }
 
-        if (! $this->supportsOrders($driver)) {
-            return new OrderImportResult(
+        if (! $driver instanceof ImportsMarketplacePrices) {
+            return new CatalogImportResult(
                 failed: 1,
                 errors: [
-                    'Импорт заказов для площадки «'
+                    'Обновление цен для площадки «'
                         .$integrationType->name
-                        .'» пока не реализован.',
+                        .'» пока не реализовано.',
                 ],
             );
         }
 
-        // Общая пауза на кабинет. Если Wildberries уже сказал «жди»,
-        // не идём в API вообще — иначе продлим блокировку и себе,
-        // и всем остальным операциям по этому кабинету.
         $cooldown = $this->cooldown->secondsLeft($account);
 
         if ($cooldown > 0) {
             throw new MarketplaceRateLimitException(
-                'Кабинет на паузе после отказа Wildberries.',
+                'Кабинет на паузе после отказа маркетплейса.',
                 $cooldown,
             );
         }
 
         $lock = Cache::lock(
-            'marketplace-orders-import:'.$account->getKey(),
+            'marketplace-price-import:'.$account->getKey(),
             self::LOCK_SECONDS,
         );
 
         if (! $lock->get()) {
-            return new OrderImportResult(
-                skipped: 1,
+            return new CatalogImportResult(
+                failed: 0,
                 errors: [
-                    'Импорт заказов для этого подключения уже выполняется.',
+                    'Обновление цен для этого подключения уже выполняется.',
                 ],
             );
         }
@@ -92,12 +90,12 @@ class MarketplaceOrderSyncRunner
         $log = $account->syncLogs()->create([
             'operation' => self::OPERATION,
             'status' => 'running',
-            'message' => 'Импорт заказов запущен.',
+            'message' => 'Обновление цен и остатков запущено.',
             'started_at' => now(),
         ]);
 
         try {
-            $result = $driver->importOrders($account, $since);
+            $result = $driver->importPrices($account);
 
             $log->update([
                 'status' => $result->failed === 0
@@ -108,19 +106,12 @@ class MarketplaceOrderSyncRunner
                 'updated_count' => $result->updated,
                 'failed_count' => $result->failed,
                 'message' => $this->describe($result),
-                'details' => [
-                    'skipped' => $result->skipped,
-                    'errors' => $result->errors,
-                    'since' => $since?->toIso8601String(),
-                ],
+                'details' => ['errors' => $result->errors],
                 'finished_at' => now(),
             ]);
 
             return $result;
         } catch (MarketplaceRateLimitException $exception) {
-            // Не ошибка, а «приходите позже»: помечаем повтором
-            // и отдаём наверх, чтобы джоба вернула задачу в очередь.
-            // Паузу объявляем на весь кабинет, а не только для себя.
             $this->cooldown->start(
                 $account,
                 $exception->retryAfterSeconds,
@@ -141,16 +132,11 @@ class MarketplaceOrderSyncRunner
                 'status' => 'failed',
                 'failed_count' => 1,
                 'message' => $exception->getMessage(),
-                'details' => [
-                    'exception' => $exception::class,
-                ],
+                'details' => ['exception' => $exception::class],
                 'finished_at' => now(),
             ]);
 
-            return new OrderImportResult(
-                failed: 1,
-                errors: [$exception->getMessage()],
-            );
+            throw $exception;
         } finally {
             $lock->release();
         }
@@ -166,41 +152,29 @@ class MarketplaceOrderSyncRunner
         }
 
         try {
-            return $this->supportsOrders(
-                $this->drivers->for($integrationType)
-            );
+            return $this->drivers->for($integrationType)
+                instanceof ImportsMarketplacePrices;
         } catch (Throwable) {
             return false;
         }
     }
 
-    public function supportsOrders(mixed $driver): bool
-    {
-        if (! $driver instanceof ImportsMarketplaceOrders) {
-            return false;
-        }
-
-        return (bool) (
-            $driver->capabilities()['orders_read'] ?? false
-        );
-    }
-
-    public function describe(OrderImportResult $result): string
-    {
-        if ($result->skipped > 0 && $result->received === 0) {
-            return $result->errors[0]
-                ?? 'Импорт пропущен.';
-        }
-
+    public function describe(
+        CatalogImportResult $result,
+    ): string {
         if ($result->failed > 0) {
             return $result->errors[0]
-                ?? 'Импорт заказов завершился с ошибками.';
+                ?? 'Обновление цен завершилось с ошибками.';
+        }
+
+        if ($result->received === 0) {
+            return $result->errors[0]
+                ?? 'Обновлять нечего: карточек нет.';
         }
 
         return sprintf(
-            'Получено: %d, создано: %d, обновлено: %d.',
+            'Обработано карточек: %d, обновлено: %d.',
             $result->received,
-            $result->created,
             $result->updated,
         );
     }

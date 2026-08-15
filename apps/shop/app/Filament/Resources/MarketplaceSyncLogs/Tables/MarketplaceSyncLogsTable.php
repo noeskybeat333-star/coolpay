@@ -38,6 +38,7 @@ class MarketplaceSyncLogsTable
                     ->formatStateUsing(
                         fn (?string $state): string => match ($state) {
                             'catalog_import' => 'Каталог',
+                            'prices_import' => 'Цены и остатки',
                             'orders_import' => 'Заказы',
                             default => (string) $state,
                         }
@@ -119,6 +120,7 @@ class MarketplaceSyncLogsTable
                     ->label('Операция')
                     ->options([
                         'catalog_import' => 'Каталог',
+                        'prices_import' => 'Цены и остатки',
                         'orders_import' => 'Заказы',
                     ]),
 

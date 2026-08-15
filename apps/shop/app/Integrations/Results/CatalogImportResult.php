@@ -10,6 +10,20 @@ final readonly class CatalogImportResult
         public int $updated = 0,
         public int $failed = 0,
         public array $errors = [],
+
+        /**
+         * Карточки сохранены, но цены получить не удалось — обычно
+         * из-за лимита частоты у API цен. Это не провал импорта:
+         * цены догоняются отдельной задачей.
+         */
+        public bool $pricesDeferred = false,
+
+        /**
+         * Сколько секунд маркетплейс просил подождать, если цены
+         * отложены именно из-за лимита частоты. Ноль — цены отложены
+         * по другой причине либо не отложены вовсе.
+         */
+        public int $pricesRetryAfterSeconds = 0,
     ) {
     }
 

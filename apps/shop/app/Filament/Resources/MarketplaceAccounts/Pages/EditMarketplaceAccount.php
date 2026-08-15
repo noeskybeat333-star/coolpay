@@ -6,9 +6,12 @@ use App\Filament\Resources\MarketplaceAccounts\MarketplaceAccountResource;
 use App\Integrations\MarketplaceDriverManager;
 use App\Jobs\SyncMarketplaceCatalog;
 use App\Jobs\SyncMarketplaceOrders;
+use App\Jobs\SyncMarketplacePrices;
 use App\Models\IntegrationType;
 use App\Services\MarketplaceCatalogSyncRunner;
+use App\Services\MarketplaceCooldown;
 use App\Services\MarketplaceOrderSyncRunner;
+use App\Services\MarketplacePriceSyncRunner;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Notifications\Notification;
@@ -48,6 +51,26 @@ class EditMarketplaceAccount extends EditRecord
                         Notification::make()
                             ->danger()
                             ->title('Не выбрана площадка')
+                            ->send();
+
+                        return;
+                    }
+
+                    // Во время паузы даже проверка связи вредна: это
+                    // лишний запрос в тот же счётчик. Показываем остаток
+                    // из кэша, никуда не ходя.
+                    $left = app(MarketplaceCooldown::class)
+                        ->secondsLeft($this->record);
+
+                    if ($left > 0) {
+                        Notification::make()
+                            ->warning()
+                            ->title('Кабинет на паузе')
+                            ->body(
+                                'Маркетплейс ограничил частоту запросов. '
+                                .'Осталось '.$left.' с. Проверка не '
+                                .'выполнялась, чтобы не продлить паузу.'
+                            )
                             ->send();
 
                         return;
@@ -137,6 +160,38 @@ class EditMarketplaceAccount extends EditRecord
                             'Результат появится в разделе «Журнал '
                             .'синхронизаций». Если импорт уже выполняется, '
                             .'повторная задача не создаётся.'
+                        )
+                        ->send();
+                }),
+
+            Action::make('importPrices')
+                ->label('Обновить цены и остатки')
+                ->icon('heroicon-o-banknotes')
+                ->color('warning')
+                ->visible(
+                    fn (): bool => app(
+                        MarketplacePriceSyncRunner::class
+                    )->supportsAccount($this->record)
+                )
+                ->action(function (): void {
+                    abort_unless(
+                        static::getResource()::canEdit(
+                            $this->record
+                        ),
+                        403,
+                    );
+
+                    SyncMarketplacePrices::dispatch(
+                        $this->record->getKey()
+                    );
+
+                    Notification::make()
+                        ->info()
+                        ->title('Обновление цен поставлено в очередь')
+                        ->body(
+                            'CRM пройдёт по уже сохранённым карточкам и '
+                            .'обновит цены и остатки. На маркетплейсе '
+                            .'ничего изменено не будет.'
                         )
                         ->send();
                 }),

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Integrations\Exceptions\MarketplaceRateLimitException;
+use App\Jobs\SyncMarketplacePrices;
 use App\Integrations\MarketplaceDriverManager;
 use App\Integrations\Results\CatalogImportResult;
 use App\Models\MarketplaceAccount;
@@ -25,6 +26,7 @@ class MarketplaceCatalogSyncRunner
 
     public function __construct(
         private readonly MarketplaceDriverManager $drivers,
+        private readonly MarketplaceCooldown $cooldown,
     ) {
     }
 
@@ -64,6 +66,16 @@ class MarketplaceCatalogSyncRunner
             );
         }
 
+        // Общая пауза на кабинет — см. комментарий в MarketplaceCooldown.
+        $cooldown = $this->cooldown->secondsLeft($account);
+
+        if ($cooldown > 0) {
+            throw new MarketplaceRateLimitException(
+                'Кабинет на паузе после отказа Wildberries.',
+                $cooldown,
+            );
+        }
+
         $lock = Cache::lock(
             'marketplace-catalog-import:'.$account->getKey(),
             self::LOCK_SECONDS,
@@ -88,6 +100,25 @@ class MarketplaceCatalogSyncRunner
         try {
             $result = $driver->importCatalog($account);
 
+            // Карточки дошли, а цены нет — догоняем их отдельной
+            // задачей. Она пойдёт только по сохранённым карточкам и
+            // при отказе будет повторять один запрос, а не весь импорт.
+            if ($result->pricesDeferred && $result->failed === 0) {
+                // Отказ по ценам всё равно означает, что кабинет
+                // упёрся в лимит. Драйвер проглотил исключение, чтобы
+                // спасти карточки, но объявить паузу на кабинет обязаны
+                // мы — иначе планировщик заказов продолжит ходить в WB
+                // и продлит блокировку всем остальным.
+                if ($result->pricesRetryAfterSeconds > 0) {
+                    $this->cooldown->start(
+                        $account,
+                        $result->pricesRetryAfterSeconds,
+                    );
+                }
+
+                SyncMarketplacePrices::dispatch($account->getKey());
+            }
+
             $log->update([
                 'status' => $result->failed === 0
                     ? 'success'
@@ -105,6 +136,12 @@ class MarketplaceCatalogSyncRunner
         } catch (MarketplaceRateLimitException $exception) {
             // Не ошибка, а «приходите позже»: помечаем повтором
             // и отдаём наверх, чтобы джоба вернула задачу в очередь.
+            // Паузу объявляем на весь кабинет, а не только для себя.
+            $this->cooldown->start(
+                $account,
+                $exception->retryAfterSeconds,
+            );
+
             $log->update([
                 'status' => 'retrying',
                 'message' => $exception->getMessage()
@@ -160,11 +197,18 @@ class MarketplaceCatalogSyncRunner
                 ?? 'Импорт каталога завершился с ошибками.';
         }
 
-        return sprintf(
+        $message = sprintf(
             'Получено: %d, создано: %d, обновлено: %d.',
             $result->received,
             $result->created,
             $result->updated,
         );
+
+        if ($result->pricesDeferred) {
+            $message .= ' Цены и остатки не получены из-за лимита '
+                .'маркетплейса, поставлена отдельная задача.';
+        }
+
+        return $message;
     }
 }

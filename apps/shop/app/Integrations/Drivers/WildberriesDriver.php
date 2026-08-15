@@ -3,6 +3,7 @@
 namespace App\Integrations\Drivers;
 
 use App\Integrations\Contracts\ImportsMarketplaceOrders;
+use App\Integrations\Contracts\ImportsMarketplacePrices;
 use App\Integrations\Contracts\MarketplaceDriver;
 use App\Integrations\Exceptions\MarketplaceRateLimitException;
 use App\Integrations\Results\CatalogImportResult;
@@ -20,7 +21,8 @@ use Throwable;
 
 class WildberriesDriver implements
     MarketplaceDriver,
-    ImportsMarketplaceOrders
+    ImportsMarketplaceOrders,
+    ImportsMarketplacePrices
 {
     private const COMMON_API_URL =
         'https://common-api.wildberries.ru';
@@ -72,7 +74,11 @@ class WildberriesDriver implements
             $message = match ($response->status()) {
                 401 => 'Токен Wildberries недействителен или истёк.',
                 403 => 'У токена недостаточно разрешений.',
-                429 => 'Превышен лимит проверок. Повторите позднее.',
+                429 => 'Превышен лимит запросов. Повторить можно через '
+                    .((int) (
+                        $response->header('X-Ratelimit-Retry') ?: 0
+                    ))
+                    .' с.',
                 default => 'Wildberries вернул ошибку HTTP '
                     .$response->status().'.',
             };
@@ -118,6 +124,9 @@ class WildberriesDriver implements
         $updated = 0;
         $failed = 0;
         $errors = [];
+
+        $pricesDeferred = false;
+        $priceFailure = null;
 
         $cursor = [
             'limit' => self::PAGE_LIMIT,
@@ -190,17 +199,52 @@ class WildberriesDriver implements
                 }
 
                 $received += count($cards);
-                $pricesByExternalId = $this->fetchPrices(
-                    $token,
-                    $cards,
-                );
 
-                $stocksByExternalId =
-                    $this->fetchSellerStocks(
+                // Цены и остатки живут в других API со своими
+                // лимитерами. Их отказ не должен отменять уже
+                // полученные карточки: иначе каждый повтор заново
+                // выкачивает содержимое, которое и так дошло, и
+                // впустую жжёт квоту Content API.
+                try {
+                    $pricesByExternalId = $this->fetchPrices(
                         $token,
                         $cards,
-                        $sellerWarehouseIds,
                     );
+                } catch (MarketplaceRateLimitException $exception) {
+                    $pricesByExternalId = [];
+                    $pricesDeferred = true;
+
+                    $priceFailure = $exception;
+                } catch (RuntimeException $exception) {
+                    $pricesByExternalId = [];
+                    $pricesDeferred = true;
+
+                    $errors[] = $exception->getMessage();
+                }
+
+                try {
+                    // Лимитер у WB общий на кабинет. Если цены уже
+                    // получили отказ, идти за остатками — значит
+                    // добавить ещё один запрос в тот же счётчик и
+                    // продлить блокировку.
+                    $stocksByExternalId = $priceFailure !== null
+                        ? []
+                        : $this->fetchSellerStocks(
+                            $token,
+                            $cards,
+                            $sellerWarehouseIds,
+                        );
+                } catch (MarketplaceRateLimitException $exception) {
+                    $stocksByExternalId = [];
+                    $pricesDeferred = true;
+
+                    $priceFailure ??= $exception;
+                } catch (RuntimeException $exception) {
+                    $stocksByExternalId = [];
+                    $pricesDeferred = true;
+
+                    $errors[] = $exception->getMessage();
+                }
 
                 $pageCreated = 0;
                 $pageUpdated = 0;
@@ -211,6 +255,7 @@ class WildberriesDriver implements
                     $cards,
                     $pricesByExternalId,
                     $stocksByExternalId,
+                    $pricesDeferred,
                     $syncedAt,
                     &$pageCreated,
                     &$pageUpdated,
@@ -235,17 +280,29 @@ class WildberriesDriver implements
                         ) ?? $vendorCode
                             ?? 'Товар Wildberries '.$externalId;
 
-                        $priceAttributes =
-                            $pricesByExternalId[$externalId] ?? [];
+                        // Если цены и остатки не доехали, эти поля не
+                        // пишем совсем. Записать ноль и «нет цены»
+                        // означало бы подменить настоящие данные
+                        // выдумкой из-за чужого лимита частоты.
+                        if ($pricesDeferred) {
+                            $marketAttributes = [];
+                        } else {
+                            $priceAttributes =
+                                $pricesByExternalId[$externalId] ?? [];
 
-                        $stockQuantity = (int) (
-                            $stocksByExternalId[$externalId] ?? 0
-                        );
+                            $stockQuantity = (int) (
+                                $stocksByExternalId[$externalId] ?? 0
+                            );
 
-                        $status = $this->resolveListingStatus(
-                            $priceAttributes['price'] ?? null,
-                            $stockQuantity,
-                        );
+                            $marketAttributes = [
+                                ...$priceAttributes,
+                                'stock_quantity' => $stockQuantity,
+                                'status' => $this->resolveListingStatus(
+                                    $priceAttributes['price'] ?? null,
+                                    $stockQuantity,
+                                ),
+                            ];
+                        }
 
                         $listing = MarketplaceListing::query()
                             ->updateOrCreate(
@@ -271,9 +328,7 @@ class WildberriesDriver implements
                                             'description',
                                         ),
                                     ),
-                                    ...$priceAttributes,
-                                    'stock_quantity' => $stockQuantity,
-                                    'status' => $status,
+                                    ...$marketAttributes,
                                     'characteristics' => data_get(
                                         $card,
                                         'characteristics',
@@ -364,10 +419,17 @@ class WildberriesDriver implements
                     'Достигнут защитный лимит количества страниц.';
             }
 
-            if ($failed === 0) {
+            // Полной синхронизацией считаем только ту, где доехало всё.
+            if ($failed === 0 && ! $pricesDeferred) {
                 $account->update([
                     'last_synced_at' => now(),
                 ]);
+            }
+
+            if ($pricesDeferred && $priceFailure !== null) {
+                $errors[] = $priceFailure->getMessage()
+                    .' Карточки сохранены, цены и остатки '
+                    .'будут получены отдельной задачей.';
             }
         } catch (MarketplaceRateLimitException $exception) {
             // Временный отказ, а не провал импорта. Отдаём наверх, чтобы
@@ -394,6 +456,150 @@ class WildberriesDriver implements
         return new CatalogImportResult(
             received: $received,
             created: $created,
+            updated: $updated,
+            failed: $failed,
+            errors: $errors,
+            pricesDeferred: $pricesDeferred,
+            pricesRetryAfterSeconds: $priceFailure
+                ?->retryAfterSeconds ?? 0,
+        );
+    }
+
+    /**
+     * Догоняет цены и остатки по уже сохранённым карточкам.
+     *
+     * Content API здесь не трогаем вовсе: всё, что нужно для запроса,
+     * уже лежит в raw_data сохранённых карточек. Поэтому повтор при
+     * лимите бьёт только в тот лимитер, который нас и остановил.
+     */
+    public function importPrices(
+        MarketplaceAccount $account,
+    ): CatalogImportResult {
+        $token = data_get(
+            $account->credentials,
+            'api_token',
+        );
+
+        if (blank($token)) {
+            return new CatalogImportResult(
+                failed: 1,
+                errors: ['API-токен Wildberries не указан.'],
+            );
+        }
+
+        $received = 0;
+        $updated = 0;
+        $failed = 0;
+        $errors = [];
+
+        try {
+            $sellerWarehouseIds =
+                $this->fetchSellerWarehouseIds($token);
+
+            $listings = MarketplaceListing::query()
+                ->where(
+                    'marketplace_account_id',
+                    $account->getKey(),
+                )
+                ->orderBy('id')
+                ->get(['id', 'external_id', 'raw_data']);
+
+            if ($listings->isEmpty()) {
+                return new CatalogImportResult(
+                    errors: [
+                        'Нет сохранённых карточек: сначала '
+                        .'импортируйте каталог.',
+                    ],
+                );
+            }
+
+            $chunks = $listings->chunk(self::PAGE_LIMIT);
+
+            foreach ($chunks as $index => $chunk) {
+                $cards = $chunk
+                    ->pluck('raw_data')
+                    ->filter(fn ($card): bool => is_array($card))
+                    ->values()
+                    ->all();
+
+                if ($cards === []) {
+                    continue;
+                }
+
+                $received += count($cards);
+
+                $pricesByExternalId = $this->fetchPrices(
+                    $token,
+                    $cards,
+                );
+
+                $stocksByExternalId = $this->fetchSellerStocks(
+                    $token,
+                    $cards,
+                    $sellerWarehouseIds,
+                );
+
+                $syncedAt = now();
+
+                DB::transaction(function () use (
+                    $chunk,
+                    $pricesByExternalId,
+                    $stocksByExternalId,
+                    $syncedAt,
+                    &$updated,
+                ): void {
+                    foreach ($chunk as $listing) {
+                        $externalId = $listing->external_id;
+
+                        $priceAttributes =
+                            $pricesByExternalId[$externalId] ?? [];
+
+                        $stockQuantity = (int) (
+                            $stocksByExternalId[$externalId] ?? 0
+                        );
+
+                        $listing->forceFill([
+                            ...$priceAttributes,
+                            'stock_quantity' => $stockQuantity,
+                            'status' => $this->resolveListingStatus(
+                                $priceAttributes['price'] ?? null,
+                                $stockQuantity,
+                            ),
+                            'synced_at' => $syncedAt,
+                        ])->save();
+
+                        $updated++;
+                    }
+                });
+
+                if ($index < $chunks->count() - 1) {
+                    // Лимитер WB общий на кабинет — держим паузу
+                    // между порциями так же, как в импорте карточек.
+                    usleep(700000);
+                }
+            }
+
+            if ($failed === 0) {
+                $account->update(['last_synced_at' => now()]);
+            }
+        } catch (MarketplaceRateLimitException $exception) {
+            throw $exception;
+        } catch (ConnectionException) {
+            $failed++;
+            $errors[] = 'Не удалось соединиться с API Wildberries.';
+        } catch (RuntimeException $exception) {
+            $failed++;
+            $errors[] = $exception->getMessage();
+        } catch (Throwable $exception) {
+            report($exception);
+
+            $failed++;
+            $errors[] = 'Во время обновления цен произошла '
+                .'внутренняя ошибка.';
+        }
+
+        return new CatalogImportResult(
+            received: $received,
             updated: $updated,
             failed: $failed,
             errors: $errors,
@@ -448,14 +654,21 @@ class WildberriesDriver implements
             );
 
         if (! $response->successful()) {
+            // Лимит частоты — временный отказ, а не провал: пусть
+            // очередь повторит позже, как и в остальных запросах.
+            if ($response->status() === 429) {
+                throw MarketplaceRateLimitException::fromResponse(
+                    $response,
+                    'Превышен лимит запросов API складов Wildberries.',
+                );
+            }
+
             throw new RuntimeException(
                 match ($response->status()) {
                     401 => 'Токен Wildberries не имеет доступа '
                         .'к складам продавца.',
                     403 => 'У токена нет разрешения на чтение '
                         .'складов продавца.',
-                    429 => 'Превышен лимит запросов API '
-                        .'складов Wildberries.',
                     default => 'API складов Wildberries вернул '
                         .'ошибку HTTP '
                         .$response->status().'.',
@@ -560,6 +773,14 @@ class WildberriesDriver implements
                     );
 
                 if (! $response->successful()) {
+                    if ($response->status() === 429) {
+                        throw MarketplaceRateLimitException::fromResponse(
+                            $response,
+                            'Превышен лимит запросов остатков '
+                            .'Wildberries.',
+                        );
+                    }
+
                     throw new RuntimeException(
                         match ($response->status()) {
                             401 => 'Токен Wildberries не имеет '
@@ -568,8 +789,6 @@ class WildberriesDriver implements
                                 .'на чтение остатков.',
                             409 => 'Склад Wildberries временно '
                                 .'обрабатывается.',
-                            429 => 'Превышен лимит запросов '
-                                .'остатков Wildberries.',
                             default => 'API остатков Wildberries '
                                 .'вернул ошибку HTTP '
                                 .$response->status().'.',

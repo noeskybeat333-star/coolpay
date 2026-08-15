@@ -2,31 +2,26 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\SyncMarketplaceOrders;
+use App\Integrations\Exceptions\MarketplaceRateLimitException;
+use App\Jobs\SyncMarketplaceCatalog;
 use App\Models\MarketplaceAccount;
+use App\Services\MarketplaceCatalogSyncRunner;
 use App\Services\MarketplaceCooldown;
-use App\Services\MarketplaceOrderSyncRunner;
-use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 
-class ImportMarketplaceOrders extends Command
+class ImportMarketplaceCatalog extends Command
 {
-    protected $signature = 'marketplace:import-orders
+    protected $signature = 'marketplace:import-catalog
         {--account=* : ID подключений, по умолчанию все активные}
-        {--days=30 : Глубина импорта в днях}
         {--sync : Выполнить сразу, минуя очередь (для отладки)}';
 
     protected $description =
-        'Импортирует заказы маркетплейсов в CRM';
+        'Импортирует карточки маркетплейсов в CRM';
 
     public function handle(
-        MarketplaceOrderSyncRunner $runner,
+        MarketplaceCatalogSyncRunner $runner,
         MarketplaceCooldown $cooldown,
     ): int {
-        $days = max(1, (int) $this->option('days'));
-
-        $since = CarbonImmutable::now()->subDays($days);
-
         $accountIds = array_filter(
             (array) $this->option('account')
         );
@@ -35,10 +30,7 @@ class ImportMarketplaceOrders extends Command
             ->where('is_active', true)
             ->when(
                 $accountIds !== [],
-                fn ($query) => $query->whereIn(
-                    'id',
-                    $accountIds,
-                ),
+                fn ($query) => $query->whereIn('id', $accountIds),
             )
             ->with('integrationType')
             ->orderBy('id')
@@ -58,45 +50,45 @@ class ImportMarketplaceOrders extends Command
             $title = $account->name
                 .' ('.($account->integrationType?->name ?? '—').')';
 
-            // Подключения без драйвера заказов пропускаем молча:
-            // планировщик ходит часто, и писать им ошибку каждый раз
-            // означало бы засорять журнал синхронизаций.
             if (! $runner->supportsAccount($account)) {
                 $this->line(
-                    $title.' — импорт заказов не поддерживается, пропуск.'
+                    $title.' — импорт каталога не поддерживается, пропуск.'
                 );
 
                 continue;
             }
 
-            // Кабинет под общей паузой — не ставим задачу вообще.
-            // Иначе ежечасный планировщик будет плодить задачи, которые
-            // тут же уходят на повтор, и держать очередь занятой.
             $left = $cooldown->secondsLeft($account);
 
             if ($left > 0) {
                 $this->warn(
                     $title.' — кабинет на паузе после отказа '
-                    .'Wildberries, осталось '.$left.' с. Пропуск.'
+                    .'маркетплейса, осталось '.$left.' с. Пропуск.'
                 );
 
                 continue;
             }
 
-            // По умолчанию только ставим задачу в очередь: планировщик
-            // не должен держать в себе долгий сетевой импорт.
             if (! $this->option('sync')) {
-                SyncMarketplaceOrders::dispatch(
-                    $account->getKey(),
-                    $days,
-                );
+                SyncMarketplaceCatalog::dispatch($account->getKey());
 
                 $this->info($title.' — задача поставлена в очередь.');
 
                 continue;
             }
 
-            $result = $runner->run($account, $since);
+            // При лимите частоты runner пробрасывает исключение наружу,
+            // чтобы задача в очереди ушла на повтор. В консоли повторять
+            // нечему — показываем причину и идём дальше.
+            try {
+                $result = $runner->run($account);
+            } catch (MarketplaceRateLimitException $exception) {
+                $this->error($title.' — '.$exception->getMessage());
+
+                $exitCode = self::FAILURE;
+
+                continue;
+            }
 
             $message = $runner->describe($result);
 
@@ -104,8 +96,6 @@ class ImportMarketplaceOrders extends Command
                 $this->error($title.' — '.$message);
 
                 $exitCode = self::FAILURE;
-            } elseif ($result->skipped > 0 && $result->received === 0) {
-                $this->warn($title.' — '.$message);
             } else {
                 $this->info($title.' — '.$message);
             }
