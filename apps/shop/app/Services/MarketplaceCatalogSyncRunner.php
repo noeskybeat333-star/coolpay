@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Integrations\Exceptions\MarketplaceRateLimitException;
-use App\Jobs\SyncMarketplacePrices;
 use App\Integrations\MarketplaceDriverManager;
 use App\Integrations\Results\CatalogImportResult;
 use App\Models\MarketplaceAccount;
@@ -110,21 +109,19 @@ class MarketplaceCatalogSyncRunner
             // Карточки дошли, а цены нет — догоняем их отдельной
             // задачей. Она пойдёт только по сохранённым карточкам и
             // при отказе будет повторять один запрос, а не весь импорт.
-            if ($result->pricesDeferred && $result->failed === 0) {
-                // Отказ по ценам всё равно означает, что кабинет
-                // упёрся в лимит. Драйвер проглотил исключение, чтобы
-                // спасти карточки, но объявить паузу на кабинет обязаны
-                // мы — иначе планировщик заказов продолжит ходить в WB
-                // и продлит блокировку всем остальным.
-                if ($result->pricesRetryAfterSeconds > 0) {
-                    $this->cooldown->start(
-                        $account,
-                        $result->pricesRetryAfterSeconds,
-                    );
-                }
-
-                SyncMarketplacePrices::dispatch($account->getKey());
-            }
+            // Задачу на цены автоматически больше не ставим.
+            //
+            // Измерено 16.08.2026: лимит у Wildberries висит не на
+            // кабинете, а на discounts-prices-api — карточки и заказы
+            // ходят свободно, а цены дают один запрос на 15 минут,
+            // причём отказ перезапускает окно. Автоповтор в такой
+            // ситуации не приближает успех, а отодвигает его: задача
+            // приходит к границе окна, получает отказ и сдвигает
+            // границу. Обновление цен запускается вручную кнопкой,
+            // когда это осмысленно.
+            //
+            // Паузу на кабинет по этой же причине не объявляем: она
+            // остановила бы и заказы, которым лимит цен не мешает.
 
             $log->update([
                 'status' => $result->failed === 0

@@ -13,7 +13,16 @@ class SyncMarketplacePrices implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 8;
+    /**
+     * Одна попытка, без повторов.
+     *
+     * У Wildberries лимит на API цен устроен так, что отказанный
+     * запрос перезапускает окно ожидания: повторы не приближают
+     * успех, а отодвигают его. Поэтому задача либо проходит сразу,
+     * либо честно пишет отказ в журнал и заканчивается — решение
+     * повторить принимает человек.
+     */
+    public int $tries = 1;
 
     public int $timeout = 1800;
 
@@ -53,8 +62,10 @@ class SyncMarketplacePrices implements ShouldBeUnique, ShouldQueue
 
         try {
             $runner->run($account);
-        } catch (MarketplaceRateLimitException $exception) {
-            $this->release($exception->retryAfterSeconds);
+        } catch (MarketplaceRateLimitException) {
+            // Отказ уже записан в журнал синхронизаций runner'ом.
+            // Возвращать задачу в очередь нечего: следующая попытка
+            // лишь отодвинет окно. Завершаемся молча.
         }
     }
 }

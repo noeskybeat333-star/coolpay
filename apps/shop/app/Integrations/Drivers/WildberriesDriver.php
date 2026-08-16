@@ -39,6 +39,18 @@ class WildberriesDriver implements
 
     private const PAGE_LIMIT = 100;
 
+    /**
+     * Сколько товаров запрашивать за один вызов API цен.
+     *
+     * Документация допускает до 1000. Раньше здесь было 100, как в
+     * пагинации карточек, и на 117 карточек уходило два запроса.
+     * При нынешнем ограничении кабинета — один запрос на 15 минут —
+     * это означало, что обновление цен не может завершиться в
+     * принципе. С порцией в 1000 весь каталог укладывается в один
+     * запрос.
+     */
+    private const PRICES_CHUNK = 1000;
+
     private const MAX_PAGES = 1000;
 
     public function testConnection(
@@ -514,7 +526,7 @@ class WildberriesDriver implements
                 );
             }
 
-            $chunks = $listings->chunk(self::PAGE_LIMIT);
+            $chunks = $listings->chunk(self::PRICES_CHUNK);
 
             foreach ($chunks as $index => $chunk) {
                 $cards = $chunk

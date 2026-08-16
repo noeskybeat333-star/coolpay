@@ -112,15 +112,14 @@ class MarketplacePriceSyncRunner
 
             return $result;
         } catch (MarketplaceRateLimitException $exception) {
-            $this->cooldown->start(
-                $account,
-                $exception->retryAfterSeconds,
-            );
-
+            // Паузу на весь кабинет здесь не объявляем: лимит висит
+            // на API цен, а не на продавце — карточки и заказы ходят
+            // свободно, и глушить их из-за цен неправильно.
             $log->update([
-                'status' => 'retrying',
+                'status' => 'failed',
+                'failed_count' => 1,
                 'message' => $exception->getMessage()
-                    .' Повтор произойдёт автоматически.',
+                    .' Повторите вручную позже.',
                 'finished_at' => now(),
             ]);
 
