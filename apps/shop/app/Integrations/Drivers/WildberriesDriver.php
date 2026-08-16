@@ -14,6 +14,7 @@ use App\Models\MarketplaceListing;
 use App\Services\WildberriesOrderImporter;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -641,7 +642,42 @@ class WildberriesDriver implements
     /**
      * @return array<int, int>
      */
+    /**
+     * Список складов продавца с суточным кэшем.
+     *
+     * Склады заводят раз в жизни, а запрос за ними уходил при каждом
+     * импорте — и первым, то есть выбирал бюджет до того, как дело
+     * доходило до нужных данных. При лимите в один запрос на 15 минут
+     * это делало импорт цен невыполнимым в принципе.
+     *
+     * @return array<int, int>
+     */
     private function fetchSellerWarehouseIds(
+        string $token,
+    ): array {
+        $cacheKey = 'wb-warehouses:'.md5($token);
+
+        $cached = Cache::get($cacheKey);
+
+        // В кэше только скаляры и массивы: cache.serializable_classes
+        // запрещает восстанавливать объекты (см. MarketplaceCooldown).
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $ids = $this->requestSellerWarehouseIds($token);
+
+        if ($ids !== []) {
+            Cache::put($cacheKey, $ids, now()->addDay());
+        }
+
+        return $ids;
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    private function requestSellerWarehouseIds(
         string $token,
     ): array {
         $response = Http::acceptJson()
