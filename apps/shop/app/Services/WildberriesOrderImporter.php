@@ -76,10 +76,9 @@ class WildberriesOrderImporter
         'dbw' => [
             'label' => 'Курьером (DBW)',
             'path' => '/api/v3/dbw/orders',
-            'status_path' =>
-                '/api/marketplace/v3/dbw/orders/status/info',
-            'status_field' => 'ordersIds',
-            'status_id_key' => 'orderId',
+            'status_path' => '/api/v3/dbw/orders/status',
+            'status_field' => 'orders',
+            'status_id_key' => 'id',
             'enabled' => true,
         ],
     ];
