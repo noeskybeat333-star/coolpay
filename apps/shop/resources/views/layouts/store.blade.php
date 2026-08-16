@@ -22,7 +22,8 @@
         content="@yield('description', 'Оригинальная электроника с гарантией и быстрой доставкой.')"
     >
 
-    @fonts
+    {{-- @fonts убрана вместе с плагином bunny: шрифт объявлен
+         локально в resources/css/app.css. --}}
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 

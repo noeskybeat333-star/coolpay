@@ -1,0 +1,16 @@
+/*
+    Тема панели администратора.
+
+    Создана вручную по стабу vendor/filament/filament/stubs/ThemeCss.stub:
+    artisan make:filament-theme требует Node внутри php-контейнера, а его
+    там нет и быть не должно — фронтенд собирается отдельным сервисом.
+
+    Директивы @source указывают Tailwind, где искать используемые классы.
+    Без своей темы панель грузила готовый CSS Filament, и классы из наших
+    шаблонов админки в него не попадали — именно поэтому вёрстка
+    дашборда «не применялась».
+*/
+@import '../../../../vendor/filament/filament/resources/css/theme.css';
+
+@source '../../../../app/Filament/**/*';
+@source '../../../../resources/views/filament/**/*';

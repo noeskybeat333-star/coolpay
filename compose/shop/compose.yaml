@@ -44,6 +44,27 @@ services:
       - backend
       - proxy
 
+  # Сборка фронтенда. Не поднимается вместе со стеком — запускается
+  # вручную: docker compose --profile tools run --rm assets
+  #
+  # Отдельный сервис, а не стадия в Dockerfile: код примонтирован с
+  # хоста, и всё, что соберётся внутри образа, этим маунтом
+  # перекрывается. Собирая через тот же маунт, кладём результат туда,
+  # где его увидят и nginx, и php-fpm.
+  assets:
+    image: node:22-bookworm-slim
+    profiles:
+      - tools
+    working_dir: /var/www/html
+    # Пишем файлы от имени хозяина каталога, иначе public/build
+    # окажется принадлежащим root и следующая сборка упрётся в права.
+    user: "1000:1000"
+    environment:
+      - npm_config_cache=/tmp/npm
+    volumes:
+      - /opt/infra/apps/shop:/var/www/html
+    command: sh -lc "npm ci && npm run build"
+
   web:
     image: nginx:1.28-alpine
     container_name: shop-web

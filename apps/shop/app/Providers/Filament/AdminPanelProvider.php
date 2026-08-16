@@ -30,6 +30,13 @@ class AdminPanelProvider extends PanelProvider
             ->colors([
                 'primary' => Color::Amber,
             ])
+            // Своя тема вместо готового CSS Filament. Нужна не ради
+            // оформления, а чтобы Tailwind сканировал наши шаблоны
+            // админки: без неё классы из app/Filament и
+            // resources/views/filament в собранный CSS не попадали.
+            // После правки шаблонов админки пересобирать ассеты:
+            // docker compose --profile tools run --rm assets
+            ->viteTheme('resources/css/filament/admin/theme.css')
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\Filament\Pages')
             ->pages([

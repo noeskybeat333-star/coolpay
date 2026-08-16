@@ -1,18 +1,21 @@
 import { defineConfig } from 'vite';
 import laravel from 'laravel-vite-plugin';
-import { bunny } from 'laravel-vite-plugin/fonts';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
     plugins: [
         laravel({
-            input: ['resources/css/app.css', 'resources/js/app.js'],
-            refresh: true,
-            fonts: [
-                bunny('Instrument Sans', {
-                    weights: [400, 500, 600],
-                }),
+            // Шрифты подключаются локально, из resources/fonts.
+            // Плагин bunny() убран намеренно: он ходил за шрифтами
+            // на fonts.bunny.net во время сборки, из-за чего сборка
+            // падала при недоступности чужого CDN и вообще зависела
+            // от сети. Файлы те же, скачаны один раз.
+            input: [
+                'resources/css/app.css',
+                'resources/js/app.js',
+                'resources/css/filament/admin/theme.css',
             ],
+            refresh: true,
         }),
         tailwindcss(),
     ],
