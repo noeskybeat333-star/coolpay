@@ -206,6 +206,33 @@ class Dashboard extends BaseDashboard
                 )
                 ->action('toggleArranging'),
 
+            Action::make('resetLayout')
+                ->label('Сбросить раскладку')
+                ->icon('heroicon-o-arrow-uturn-left')
+                ->color('gray')
+                ->visible(fn (): bool => filled(
+                    Auth::user()?->dashboard_settings
+                ))
+                ->requiresConfirmation()
+                ->modalHeading('Вернуть раскладку по умолчанию?')
+                ->modalDescription(
+                    'Размеры, высоты и порядок виджетов сбросятся. '
+                    .'Настройки других пользователей не изменятся.'
+                )
+                ->modalSubmitActionLabel('Сбросить')
+                ->action(function (): void {
+                    $user = Auth::user();
+
+                    $user->dashboard_settings = null;
+
+                    $user->save();
+
+                    Notification::make()
+                        ->success()
+                        ->title('Раскладка сброшена')
+                        ->send();
+                }),
+
             Action::make('configureWidgets')
                 ->label('Настроить виджеты')
                 ->icon('heroicon-o-adjustments-horizontal')

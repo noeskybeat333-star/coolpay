@@ -92,6 +92,11 @@ class WildberriesOrderImportTest extends TestCase
                 'orders' => $orders,
                 'next' => 0,
             ]),
+
+            // Импортёр обходит ещё DBS и DBW. Без явного ответа они
+            // считаются незаявленными запросами и падают с ошибкой,
+            // подмешивая failed в результат про FBS.
+            '*' => Http::response(['orders' => [], 'next' => 0]),
         ]);
     }
 
@@ -301,6 +306,16 @@ class WildberriesOrderImportTest extends TestCase
             &$supplierStatus,
             &$wbStatus,
         ) {
+            // Импортёр обходит три модели работы. Отвечаем заказом только
+            // за FBS: иначе один и тот же orderUid приедет трижды и
+            // счётчики created/updated перестанут значить то, что проверяем.
+            if (
+                str_contains($request->url(), '/dbs/')
+                || str_contains($request->url(), '/dbw/')
+            ) {
+                return Http::response(['orders' => [], 'next' => 0]);
+            }
+
             if (str_contains($request->url(), '/orders/status')) {
                 return Http::response([
                     'orders' => [
@@ -343,5 +358,143 @@ class WildberriesOrderImportTest extends TestCase
 
         $this->assertSame(Order::STATUS_COMPLETED, $order->status);
         $this->assertCount(1, $order->items);
+    }
+
+    /**
+     * Витрина (DBS) отвечает по другим правилам, чем FBS: свой путь
+     * статусов, поле ordersIds вместо orders и идентификатор orderId
+     * вместо id. Форма ответа взята с живого кабинета.
+     */
+    public function test_imports_dbs_orders_with_their_own_status_endpoint(): void
+    {
+        $account = $this->account();
+
+        Http::fake([
+            '*/api/marketplace/v3/dbs/orders/status/info' => Http::response([
+                'orders' => [
+                    [
+                        'supplierStatus' => 'receive',
+                        'wbStatus' => 'sold',
+                        'errors' => null,
+                        'orderId' => 5457801056,
+                    ],
+                    [
+                        'supplierStatus' => 'new',
+                        'wbStatus' => 'declined_by_client',
+                        'errors' => null,
+                        'orderId' => 5386942008,
+                    ],
+                ],
+            ]),
+
+            '*/api/v3/dbs/orders*' => Http::response([
+                'next' => 0,
+                'orders' => [
+                    $this->task(
+                        5457801056,
+                        'uid-dbs-sold',
+                        818195263,
+                        '17promax_256_blue_2esim',
+                        11772000,
+                        [
+                            'deliveryType' => 'edbs',
+                            'finalPrice' => 11772000,
+                            'convertedFinalPrice' => 11772000,
+                            'groupId' => 'group-1',
+                            'address' => [
+                                'fullAddress' => 'Москва, Кусковская улица, д. 1Ас4',
+                            ],
+                        ],
+                    ),
+                    $this->task(
+                        5386942008,
+                        'uid-dbs-declined',
+                        818143002,
+                        '17Air_256_Black',
+                        8840000,
+                        [
+                            'deliveryType' => 'edbs',
+                            'finalPrice' => 8840000,
+                            'convertedFinalPrice' => 8840000,
+                        ],
+                    ),
+                ],
+            ]),
+
+            '*' => Http::response(['orders' => [], 'next' => 0]),
+        ]);
+
+        $result = $this->import($account);
+
+        $this->assertSame(2, $result->received);
+        $this->assertSame(2, $result->created);
+        $this->assertSame(0, $result->failed);
+
+        $sold = Order::query()
+            ->where('external_id', 'uid-dbs-sold')
+            ->firstOrFail();
+
+        $this->assertSame('dbs', $sold->fulfillment_type);
+        $this->assertSame(Order::STATUS_COMPLETED, $sold->status);
+        $this->assertSame(Order::PAYMENT_PAID, $sold->payment_status);
+
+        // 11772000 копеек = 117 720 ₽ — столько же в кабинете WB.
+        $this->assertSame('117720.00', (string) $sold->total);
+
+        $this->assertSame(
+            'Москва, Кусковская улица, д. 1Ас4',
+            $sold->delivery_address,
+        );
+
+        $declined = Order::query()
+            ->where('external_id', 'uid-dbs-declined')
+            ->firstOrFail();
+
+        // Отказ покупателя в первый час — отменённый заказ, а не новый,
+        // хотя supplierStatus так и остался new.
+        $this->assertSame(Order::STATUS_CANCELLED, $declined->status);
+        $this->assertSame('88400.00', (string) $declined->total);
+    }
+
+    /**
+     * API отдаёт максимум 30 календарных дней за запрос, поэтому глубина
+     * режется на окна. Без этого DBS отвечает IncorrectParameter.
+     */
+    public function test_splits_long_period_into_windows(): void
+    {
+        $account = $this->account();
+
+        Http::fake(['*' => Http::response(['orders' => [], 'next' => 0])]);
+
+        app(WildberriesOrderImporter::class)->import(
+            $account,
+            CarbonImmutable::now()->subDays(90),
+        );
+
+        $widest = 0;
+
+        Http::assertSent(function ($request) use (&$widest): bool {
+            if ($request->method() !== 'GET') {
+                return true;
+            }
+
+            parse_str(
+                (string) parse_url($request->url(), PHP_URL_QUERY),
+                $query,
+            );
+
+            $this->assertArrayHasKey('dateTo', $query);
+            $this->assertArrayHasKey('dateFrom', $query);
+
+            $widest = max(
+                $widest,
+                (int) $query['dateTo'] - (int) $query['dateFrom'],
+            );
+
+            return true;
+        });
+
+        $this->assertGreaterThan(0, $widest);
+        $this->assertLessThanOrEqual(30 * 86400, $widest);
     }
 }

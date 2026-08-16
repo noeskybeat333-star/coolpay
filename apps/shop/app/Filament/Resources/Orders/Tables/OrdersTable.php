@@ -21,7 +21,15 @@ class OrdersTable
                     ->searchable()
                     ->sortable()
                     ->copyable()
-                    ->weight('bold'),
+                    ->weight('bold')
+                    // Свой номер нужен CRM: он сквозной для всех каналов
+                    // и не зависит от площадки. Но сверять заказ с
+                    // кабинетом по нему нельзя, поэтому рядом всегда
+                    // виден номер площадки.
+                    ->description(
+                        fn (Order $record): ?string =>
+                            $record->external_number
+                    ),
 
                 TextColumn::make('source')
                     ->label('Канал')

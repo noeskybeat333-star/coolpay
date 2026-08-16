@@ -93,11 +93,17 @@ class MarketplaceOrderUpserter
                     'fulfillment_type' =>
                         $data['fulfillment_type']
                         ?? null,
+                    // Импортёр, не сумевший определить статус, не передаёт
+                    // его вовсе — и тогда уже известный статус сохраняется.
+                    // Иначе сбой метода статусов откатывал бы выкупленные
+                    // заказы обратно в «новые» при каждом импорте.
                     'status' =>
                         $data['status']
+                        ?? $order->status
                         ?? Order::STATUS_NEW,
                     'payment_status' =>
                         $data['payment_status']
+                        ?? $order->payment_status
                         ?? Order::PAYMENT_PAID,
                     'payment_method' =>
                         $data['payment_method']

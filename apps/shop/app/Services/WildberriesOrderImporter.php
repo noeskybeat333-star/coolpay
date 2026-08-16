@@ -32,36 +32,55 @@ class WildberriesOrderImporter
     private const DEFAULT_DEPTH_DAYS = 30;
 
     /**
-     * Предельная глубина одного запроса.
+     * Предельная глубина импорта.
      *
-     * Проверено на живом кабинете: при dateFrom за 360 дней API отвечает
-     * HTTP 200 с пустым списком, а за 90 дней возвращает данные. Поэтому
-     * период жёстко ограничивается — иначе импорт молча ничего не найдёт.
+     * Оперативные методы отдают заказы возрастом до трёх месяцев; всё
+     * старше доступно только через отдельный метод архива.
      */
     private const MAX_DEPTH_DAYS = 90;
 
     /**
+     * Предельная ширина одного запроса — ограничение самого API:
+     * «maximum of 30 calendar days per request». Более широкий период
+     * DBS отклоняет как IncorrectParameter, поэтому глубина нарезается
+     * на окна, а не передаётся одним куском.
+     */
+    private const WINDOW_DAYS = 30;
+
+    /**
      * Модели работы с Wildberries. Ключ пишется в orders.fulfillment_type.
      *
-     * Путь статусов выводится как <path>/status. Чтобы включить DBS или DBW,
-     * достаточно уточнить путь и поднять enabled: разбор записи, группировка
-     * по orderUid и сопоставление товара у всех моделей общие.
+     * Пути статусов у моделей разошлись: у FBS это <path>/status с полем
+     * orders и идентификатором id, у DBS — отдельный метод в разделе
+     * /api/marketplace с полем ordersIds и идентификатором orderId.
+     * Поэтому путь и имена полей задаются здесь, а не выводятся из path.
      */
     private const SOURCES = [
         'fbs' => [
             'label' => 'Маркетплейс (FBS)',
             'path' => '/api/v3/orders',
+            'status_path' => '/api/v3/orders/status',
+            'status_field' => 'orders',
+            'status_id_key' => 'id',
             'enabled' => true,
         ],
         'dbs' => [
             'label' => 'Витрина (DBS)',
             'path' => '/api/v3/dbs/orders',
-            'enabled' => false,
+            'status_path' =>
+                '/api/marketplace/v3/dbs/orders/status/info',
+            'status_field' => 'ordersIds',
+            'status_id_key' => 'orderId',
+            'enabled' => true,
         ],
         'dbw' => [
             'label' => 'Курьером (DBW)',
             'path' => '/api/v3/dbw/orders',
-            'enabled' => false,
+            'status_path' =>
+                '/api/marketplace/v3/dbw/orders/status/info',
+            'status_field' => 'ordersIds',
+            'status_id_key' => 'orderId',
+            'enabled' => true,
         ],
     ];
 
@@ -110,7 +129,7 @@ class WildberriesOrderImporter
             }
 
             try {
-                $rows = $this->fetchOrders(
+                $rows = $this->fetchWindows(
                     $token,
                     $source['path'],
                     $since,
@@ -145,7 +164,7 @@ class WildberriesOrderImporter
             try {
                 $statuses = $this->fetchStatuses(
                     $token,
-                    $source['path'],
+                    $source,
                     array_column($rows, 'id'),
                 );
             } catch (MarketplaceRateLimitException $exception) {
@@ -222,12 +241,68 @@ class WildberriesOrderImporter
     }
 
     /**
+     * Проход по периоду окнами, которые API согласен принять.
+     *
+     * Заказ, попавший в границу двух окон, приедет дважды — это безвредно:
+     * upsert идёт по orderUid, повтор просто обновит ту же запись.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function fetchWindows(
+        string $token,
+        string $path,
+        CarbonImmutable $since,
+    ): array {
+        $rows = [];
+
+        $now = CarbonImmutable::now();
+
+        $seconds = max(
+            1,
+            $now->getTimestamp() - $since->getTimestamp(),
+        );
+
+        // Число окон считается по округлённой глубине в днях, а не по
+        // точной разнице: $since вычисляется на доли секунды раньше, чем
+        // $now, и период ровно в 30 дней иначе разбивался бы на два окна —
+        // второе шириной в миллисекунды. Лишний запрос тут дорог: ответ
+        // 4XX Wildberries засчитывает за десять.
+        $windows = (int) ceil(
+            round($seconds / 86400) / self::WINDOW_DAYS,
+        );
+
+        $windows = max(1, $windows);
+
+        $step = (int) ceil($seconds / $windows);
+
+        $from = $since;
+
+        for ($index = 0; $index < $windows; $index++) {
+            $to = $index === $windows - 1
+                ? $now
+                : $from->addSeconds($step);
+
+            foreach (
+                $this->fetchOrders($token, $path, $from, $to)
+                as $row
+            ) {
+                $rows[] = $row;
+            }
+
+            $from = $to;
+        }
+
+        return $rows;
+    }
+
+    /**
      * @return array<int, array<string, mixed>>
      */
     private function fetchOrders(
         string $token,
         string $path,
-        CarbonImmutable $since,
+        CarbonImmutable $from,
+        CarbonImmutable $to,
     ): array {
         $rows = [];
         $cursor = 0;
@@ -238,12 +313,15 @@ class WildberriesOrderImporter
             $page <= self::MAX_PAGES;
             $page++
         ) {
+            // Все четыре параметра обязательны: без dateTo метод отвечает
+            // IncorrectParameter с пустым текстом ошибки.
             $response = $this->http($token)->get(
                 self::API_URL.$path,
                 [
                     'limit' => self::PAGE_LIMIT,
                     'next' => $cursor,
-                    'dateFrom' => $since->getTimestamp(),
+                    'dateFrom' => $from->getTimestamp(),
+                    'dateTo' => $to->getTimestamp(),
                 ],
             );
 
@@ -289,12 +367,13 @@ class WildberriesOrderImporter
     }
 
     /**
+     * @param  array<string, mixed>  $source
      * @param  array<int, mixed>  $ids
      * @return array<int, array<string, mixed>>
      */
     private function fetchStatuses(
         string $token,
-        string $path,
+        array $source,
         array $ids,
     ): array {
         $ids = array_values(
@@ -317,8 +396,8 @@ class WildberriesOrderImporter
             as $chunk
         ) {
             $response = $this->http($token)->post(
-                self::API_URL.$path.'/status',
-                ['orders' => $chunk],
+                self::API_URL.$source['status_path'],
+                [$source['status_field'] => $chunk],
             );
 
             if (! $response->successful()) {
@@ -333,7 +412,7 @@ class WildberriesOrderImporter
                     continue;
                 }
 
-                $id = (int) data_get($row, 'id');
+                $id = (int) data_get($row, $source['status_id_key']);
 
                 if ($id > 0) {
                     $statuses[$id] = $row;
@@ -384,8 +463,17 @@ class WildberriesOrderImporter
 
         sort($ids);
 
-        [$status, $paymentStatus] =
-            $this->resolveOrderStatus($ids, $statuses);
+        // Пустой список статусов означает, что метод статусов недоступен,
+        // а не что заказ новый. Тогда статус не выставляется вовсе:
+        // upsert сохранит тот, что уже был.
+        $statusKnown = array_intersect_key(
+            $statuses,
+            array_flip($ids),
+        ) !== [];
+
+        [$status, $paymentStatus] = $statusKnown
+            ? $this->resolveOrderStatus($ids, $statuses)
+            : [null, null];
 
         $firstStatus = $statuses[$ids[0]] ?? null;
 
@@ -430,6 +518,13 @@ class WildberriesOrderImporter
                 'order_uid' => $orderUid,
                 'assembly_task_ids' => $ids,
                 'supply_id' => data_get($first, 'supplyId'),
+                // Только у DBS: по нему потом можно спросить стоимость
+                // платной доставки методом /api/v3/dbs/groups/info.
+                'group_id' => data_get($first, 'groupId'),
+                'additional_services' => data_get(
+                    $first,
+                    'additionalServices',
+                ),
                 'warehouse_id' => data_get($first, 'warehouseId'),
                 'office_id' => data_get($first, 'officeId'),
                 'offices' => data_get($first, 'offices'),
@@ -513,13 +608,24 @@ class WildberriesOrderImporter
             'canceled_by_client',
             'cancelled_by_client',
             'declined_by_client',
+            'canceled_by_missed_call',
+            'canceled_by_carrier',
             'defect',
             'marriage',
         ];
 
+        // reject и cancel_missed_call бывают только у DBS: отказ при
+        // получении и отмена из-за недозвона.
+        $cancelledBySupplier = [
+            'cancel',
+            'cancel_carrier',
+            'cancel_missed_call',
+            'reject',
+        ];
+
         if (
             in_array($wb, $cancelled, true)
-            || $supplier === 'cancel'
+            || in_array($supplier, $cancelledBySupplier, true)
         ) {
             return [
                 Order::STATUS_CANCELLED,
@@ -534,11 +640,20 @@ class WildberriesOrderImporter
             ];
         }
 
+        // «Получен покупателем» — это завершённый заказ, а не отгруженный.
+        // Статус ставит сам продавец, подтверждая вручение, поэтому ждать
+        // от Wildberries отдельного sold здесь не нужно.
+        if ($supplier === 'receive') {
+            return [
+                Order::STATUS_COMPLETED,
+                Order::PAYMENT_PAID,
+            ];
+        }
+
         $mapped = match ($supplier) {
             'new' => Order::STATUS_NEW,
             'confirm' => Order::STATUS_CONFIRMED,
-            'complete', 'deliver', 'receive' =>
-                Order::STATUS_SHIPPED,
+            'complete', 'deliver' => Order::STATUS_SHIPPED,
             default => Order::STATUS_NEW,
         };
 
@@ -566,12 +681,17 @@ class WildberriesOrderImporter
         );
 
         // Цена приходит в копейках — подтверждено сверкой с кабинетом WB.
+        //
+        // У DBS есть finalPrice — сумма после скидок, именно она стоит в
+        // кабинете (8840000 → 88 400 ₽). У FBS такого поля нет, поэтому
+        // перебираем от самого точного к самому общему.
         $price = round(
-            ((float) data_get(
-                $row,
+            ((float) $this->firstNumeric($row, [
+                'convertedFinalPrice',
+                'finalPrice',
                 'convertedPrice',
-                data_get($row, 'price', 0),
-            )) / 100,
+                'price',
+            ])) / 100,
             2,
         );
 
@@ -599,8 +719,32 @@ class WildberriesOrderImporter
                 'skus' => data_get($row, 'skus'),
                 'rid' => data_get($row, 'rid'),
                 'price_kopecks' => data_get($row, 'price'),
+                'final_price_kopecks' => data_get($row, 'finalPrice'),
             ],
         ];
+    }
+
+    /**
+     * Первое непустое числовое значение из перечисленных ключей.
+     *
+     * Нужен именно перебор, а не цепочка data_get с умолчаниями: поле
+     * может присутствовать со значением null, и умолчание тогда не
+     * подставится.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  array<int, string>  $keys
+     */
+    private function firstNumeric(array $row, array $keys): float
+    {
+        foreach ($keys as $key) {
+            $value = data_get($row, $key);
+
+            if (is_numeric($value)) {
+                return (float) $value;
+            }
+        }
+
+        return 0.0;
     }
 
     private function findListing(
