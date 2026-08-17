@@ -11,6 +11,7 @@ use App\Services\WildberriesOrderImporter;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class WildberriesOrderImportTest extends TestCase
@@ -459,42 +460,74 @@ class WildberriesOrderImportTest extends TestCase
     /**
      * API отдаёт максимум 30 календарных дней за запрос, поэтому глубина
      * режется на окна. Без этого DBS отвечает IncorrectParameter.
+     *
+     * Период приходит со сдвигом: команда считает $since при постановке
+     * задачи, а выполняется задача позже. Раньше этот разрыв попадал в
+     * ширину окна, и планировщик получал 400 там, где ручной запуск с
+     * --sync проходил.
      */
-    public function test_splits_long_period_into_windows(): void
-    {
+    #[DataProvider('queueDelays')]
+    public function test_splits_long_period_into_windows(
+        int $delaySeconds,
+    ): void {
         $account = $this->account();
 
         Http::fake(['*' => Http::response(['orders' => [], 'next' => 0])]);
 
         app(WildberriesOrderImporter::class)->import(
             $account,
-            CarbonImmutable::now()->subDays(90),
+            CarbonImmutable::now()
+                ->subDays(90)
+                ->subSeconds($delaySeconds),
         );
 
         $widest = 0;
+        $windows = 0;
 
-        Http::assertSent(function ($request) use (&$widest): bool {
-            if ($request->method() !== 'GET') {
+        Http::assertSent(
+            function ($request) use (&$widest, &$windows): bool {
+                if ($request->method() !== 'GET') {
+                    return true;
+                }
+
+                parse_str(
+                    (string) parse_url($request->url(), PHP_URL_QUERY),
+                    $query,
+                );
+
+                $this->assertArrayHasKey('dateTo', $query);
+                $this->assertArrayHasKey('dateFrom', $query);
+
+                $windows++;
+
+                $widest = max(
+                    $widest,
+                    (int) $query['dateTo'] - (int) $query['dateFrom'],
+                );
+
                 return true;
             }
-
-            parse_str(
-                (string) parse_url($request->url(), PHP_URL_QUERY),
-                $query,
-            );
-
-            $this->assertArrayHasKey('dateTo', $query);
-            $this->assertArrayHasKey('dateFrom', $query);
-
-            $widest = max(
-                $widest,
-                (int) $query['dateTo'] - (int) $query['dateFrom'],
-            );
-
-            return true;
-        });
+        );
 
         $this->assertGreaterThan(0, $widest);
         $this->assertLessThanOrEqual(30 * 86400, $widest);
+
+        // Ровно по три окна на каждую из трёх моделей работы. Проверка
+        // именно на точное число: огрызок шириной в доли секунды прошёл
+        // бы проверку ширины, но дал бы лишний запрос.
+        $this->assertSame(9, $windows);
+    }
+
+    /**
+     * @return array<string, array{int}>
+     */
+    public static function queueDelays(): array
+    {
+        return [
+            'без задержки' => [0],
+            'секунда в очереди' => [1],
+            'минута в очереди' => [60],
+            'полчаса в очереди' => [1800],
+        ];
     }
 }

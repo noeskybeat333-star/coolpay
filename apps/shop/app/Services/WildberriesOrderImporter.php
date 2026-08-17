@@ -48,6 +48,16 @@ class WildberriesOrderImporter
     private const WINDOW_DAYS = 30;
 
     /**
+     * Окно уже минуты не запрашивается.
+     *
+     * $since приходит извне и почти никогда не совпадает с границей
+     * последнего окна до микросекунды — без этого порога на дальнем краю
+     * периода оставался бы огрызок шириной в доли секунды. Лишний запрос
+     * тут дорог: ответ 4XX Wildberries засчитывает за десять.
+     */
+    private const MIN_WINDOW_SECONDS = 60;
+
+    /**
      * Модели работы с Wildberries. Ключ пишется в orders.fulfillment_type.
      *
      * Пути статусов у моделей разошлись: у FBS это <path>/status с полем
@@ -256,30 +266,25 @@ class WildberriesOrderImporter
 
         $now = CarbonImmutable::now();
 
-        $seconds = max(
-            1,
-            $now->getTimestamp() - $since->getTimestamp(),
-        );
+        // Окна отсчитываются назад от текущего момента, а не делением
+        // периода на равные части. Деление давало окна шириной «30 дней
+        // плюс остаток»: $since фиксируется при постановке задачи в
+        // очередь, а `now()` к моменту выполнения уходит вперёд, и этот
+        // разрыв попадал в ширину окна. При запуске с --sync разрыв
+        // измерялся долями секунды и проходил, из планировщика — нет.
+        // Здесь ширина задаётся календарным subDays и превысить предел
+        // не может по построению.
+        $to = $now;
 
-        // Число окон считается по округлённой глубине в днях, а не по
-        // точной разнице: $since вычисляется на доли секунды раньше, чем
-        // $now, и период ровно в 30 дней иначе разбивался бы на два окна —
-        // второе шириной в миллисекунды. Лишний запрос тут дорог: ответ
-        // 4XX Wildberries засчитывает за десять.
-        $windows = (int) ceil(
-            round($seconds / 86400) / self::WINDOW_DAYS,
-        );
+        while (
+            $to->getTimestamp() - $since->getTimestamp()
+            >= self::MIN_WINDOW_SECONDS
+        ) {
+            $from = $to->subDays(self::WINDOW_DAYS);
 
-        $windows = max(1, $windows);
-
-        $step = (int) ceil($seconds / $windows);
-
-        $from = $since;
-
-        for ($index = 0; $index < $windows; $index++) {
-            $to = $index === $windows - 1
-                ? $now
-                : $from->addSeconds($step);
+            if ($from->lessThan($since)) {
+                $from = $since;
+            }
 
             foreach (
                 $this->fetchOrders($token, $path, $from, $to)
@@ -288,7 +293,7 @@ class WildberriesOrderImporter
                 $rows[] = $row;
             }
 
-            $from = $to;
+            $to = $from;
         }
 
         return $rows;
